@@ -12,13 +12,22 @@ mod imp;
 mod imp_pin;
 
 mod internals;
-use internals::*;
 
+#[cfg(test)]
+mod tests;
+
+// TODO - docs
+// TODO - safety tests
+// TODO - validity tests
+
+use traits::*;
 pub mod traits {
     pub use crate::imp::UnpinTuple;
     #[cfg(feature = "nightly")]
     pub use crate::imp::UnsizeAny;
-    pub use crate::internals::{Contains, GetAny, IntoInner, Peano, TypeList};
+    pub use crate::internals::{
+        Contains, GetAny, IntoInner, IntoSuperSet, Peano, TryIntoSubSet, TypeList,
+    };
 }
 
 pub mod parts {
@@ -56,7 +65,7 @@ macro_rules! match_any_internal {
         [($pat:pat) ($arm:expr)]
         $([($rest_pat:pat) ($rest_arm:expr)])*
     ]) => {
-        match_any_internal! {
+        $crate::match_any_internal! {
             @internal ($value) [
                 $($output)*
                 $pat => $arm,
@@ -72,7 +81,7 @@ macro_rules! match_any {
     (match $value:expr => {
         $($pat:pat => $arm:expr $(,)?)*
     }) => {
-        match_any_internal! {
+        $crate::match_any_internal! {
             @internal ($value) [] [$([($crate::parts::CoProd::Item($pat)) ($arm)])* [(nil) ({
                 let _: $crate::parts::CNil = nil;
                 match nil {}
@@ -126,6 +135,15 @@ impl<T: TypeList> PinVari<T> {
     #[inline]
     pub fn tag(&self) -> usize {
         self.0.untag().1
+    }
+
+    #[inline]
+    pub fn tag_for<A, N>() -> usize
+    where
+        T: Contains<A, N>,
+        N: Peano,
+    {
+        N::VALUE
     }
 
     #[inline]
@@ -266,12 +284,71 @@ impl<T: TypeList> Vari<T> {
     }
 
     #[inline]
+    pub fn tag_for<A, N>() -> usize
+    where
+        T: Contains<A, N>,
+        N: Peano,
+    {
+        N::VALUE
+    }
+
+    #[inline]
     pub fn is<A, N>(&self) -> bool
     where
         T: Contains<A, N>,
         N: Peano,
     {
         N::VALUE == self.tag()
+    }
+
+    unsafe fn convert<O: TypeList>(self, other_tag: usize) -> Vari<O> {
+        let (ptr, tag) = self.untag();
+        core::mem::forget(self);
+
+        let layout = T::layout(tag, T::ALIGN);
+        let super_layout = O::layout(other_tag, O::ALIGN);
+
+        assert_eq!(layout.size(), super_layout.size());
+
+        if layout == super_layout {
+            let tagged_ptr = NonNull::new_unchecked(((ptr as usize) | other_tag) as *mut ());
+
+            Vari {
+                tagged_ptr,
+                mark: PhantomData,
+            }
+        } else {
+            let size = layout.size();
+            let _dealloc = internals::DeallocOnDrop(ptr.cast(), layout);
+
+            Vari {
+                tagged_ptr: internals::raw_new_with(
+                    |out| out.copy_from_nonoverlapping(ptr, size),
+                    super_layout,
+                    O::ALIGN,
+                    other_tag,
+                ),
+                mark: PhantomData,
+            }
+        }
+    }
+
+    pub fn into_super_set<O: TypeList, I>(self) -> Vari<O>
+    where
+        T: internals::IntoSuperSet<O, I>,
+    {
+        let tag = self.tag();
+        unsafe { self.convert(T::convert_index(tag)) }
+    }
+
+    pub fn try_into_subset<O: TypeList, I>(self) -> Result<Vari<O>, Self>
+    where
+        T: internals::TryIntoSubSet<O, I>,
+    {
+        match T::convert_index(self.tag(), 0) {
+            Some(sub_index) => unsafe { Ok(self.convert(sub_index)) },
+            None => Err(self),
+        }
     }
 
     #[inline]
@@ -298,7 +375,7 @@ impl<T: TypeList> Vari<T> {
         T: IntoInner,
     {
         let (ptr, tag) = self.untag();
-        std::mem::forget(self);
+        core::mem::forget(self);
         unsafe {
             let _dealloc = internals::DeallocOnDrop(ptr, T::layout(tag, T::ALIGN));
             T::_into_inner(ptr, tag)
@@ -373,7 +450,7 @@ impl<T: TypeList> Vari<T> {
         }
 
         let (ptr, index) = self.untag();
-        let ReprItem { layout, .. } = unsafe { internals::repr::<T>(index) };
+        let layout = unsafe { T::layout(index, T::ALIGN) };
         if layout == unsafe { internals::layout::<A>(T::ALIGN) } {
             unsafe {
                 let _write = WriteOnDrop(ptr, Some(value));
@@ -402,26 +479,4 @@ impl<T: TypeList> Vari<T> {
         let (ptr, tag) = self.untag();
         unsafe { &mut *T::apply_raw(ptr, tag, imp::UnsizeImp::<U>(PhantomData)) }
     }
-}
-
-#[test]
-fn test() {
-    use std::boxed::Box;
-
-    #[derive(Debug)]
-    struct A(u8);
-    #[derive(Debug)]
-    struct B(u8);
-    #[derive(Debug)]
-    struct C(u8);
-
-    let bx = Vari::<tlist!(Box<A>, Box<B>, Box<C>)>::new(Box::new(C(0)));
-
-    let _: &Box<C> = bx.get();
-
-    match_any!(match bx.into_inner() => {
-        _ => ()
-        _ => ()
-        _ => ()
-    });
 }

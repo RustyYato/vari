@@ -1,10 +1,14 @@
-use super::*;
+use crate::{
+    internals::{Apply, CloneImp, Func, TypeList},
+    Vari,
+};
 
 use core::cmp::Ordering;
 use core::fmt;
 use core::future::Future;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
+use core::marker::PhantomData;
 #[cfg(feature = "nightly")]
 use core::marker::Unsize;
 use core::pin::Pin;

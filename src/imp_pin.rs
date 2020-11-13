@@ -1,4 +1,7 @@
-use super::*;
+use crate::{
+    internals::{Apply, Func, TypeList},
+    PinVari, Vari,
+};
 
 use core::cmp::Ordering;
 use core::fmt;

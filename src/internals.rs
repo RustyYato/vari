@@ -3,8 +3,8 @@ use core::ops::*;
 use core::pin::Pin;
 use core::ptr::NonNull;
 
-pub trait TypeList: SizeClass + Repr {}
-impl<T: SizeClass + Repr> TypeList for T {}
+pub trait TypeList: SizeClass + Repr + Tuple {}
+impl<T: SizeClass + Repr + Tuple> TypeList for T {}
 
 #[inline(always)]
 unsafe fn unreachable_unchecked() -> ! {
@@ -18,17 +18,6 @@ pub enum CNil {}
 pub enum CoProd<A, B> {
     Item(A),
     Rest(B),
-}
-
-#[repr(C)]
-pub struct Nil;
-#[repr(C)]
-pub struct Cons<A, B>(A, B);
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ReprItem {
-    pub layout: Layout,
-    pub drop_in_place: unsafe fn(*mut ()),
 }
 
 pub struct Z;
@@ -60,21 +49,26 @@ pub const unsafe fn layout<T>(align: usize) -> Layout {
     )
 }
 
-#[inline(always)]
-pub unsafe fn repr<T: TypeList>(index: usize) -> ReprItem {
-    let repr = T::REPR;
-    let repr = &repr as *const _ as *const ReprItem;
-    let mut repr = repr.add(index).read();
-    repr.layout = T::layout(index, T::ALIGN);
-    repr
+pub fn new_with<T, F: FnOnce() -> T>(value: F, align: usize, index: usize) -> NonNull<()> {
+    let layout = unsafe { layout::<T>(align) };
+    raw_new_with(
+        move |ptr: *mut ()| unsafe { ptr.cast::<T>().write(value()) },
+        layout,
+        align,
+        index,
+    )
 }
 
-pub fn new_with<T, F: FnOnce() -> T>(value: F, align: usize, index: usize) -> NonNull<()> {
+pub fn raw_new_with<F: FnOnce(*mut ())>(
+    value: F,
+    layout: Layout,
+    align: usize,
+    index: usize,
+) -> NonNull<()> {
     assert!(align.is_power_of_two());
-    let layout = unsafe { layout::<T>(align) };
 
     let ptr = if layout.size() == 0 {
-        let ptr = NonNull::<T>::dangling().as_ptr() as usize;
+        let ptr = NonNull::<()>::dangling().as_ptr() as usize;
         (ptr & !(align - 1) | align) as *mut u8
     } else {
         let ptr = unsafe { std::alloc::alloc(layout) };
@@ -86,12 +80,10 @@ pub fn new_with<T, F: FnOnce() -> T>(value: F, align: usize, index: usize) -> No
         ptr
     };
 
-    unsafe {
-        // dealloc if value fn panics
-        let dealloc = DeallocOnDrop(ptr.cast(), layout);
-        ptr.cast::<T>().write(value());
-        core::mem::forget(dealloc);
-    }
+    // dealloc if value fn panics
+    let dealloc = DeallocOnDrop(ptr.cast(), layout);
+    value(ptr.cast());
+    core::mem::forget(dealloc);
 
     let ptr = ptr as usize;
     let ptr = ptr | index;
@@ -148,17 +140,11 @@ impl<N: Peano> Peano for S<N> {
 }
 
 pub unsafe trait Repr {
-    const REPR: Self::Representation;
-    type Representation;
-
     unsafe fn layout(index: usize, align: usize) -> Layout;
     unsafe fn drop_in_place(ptr: *mut (), index: usize);
 }
 
 unsafe impl Repr for CNil {
-    type Representation = Nil;
-    const REPR: Self::Representation = Nil;
-
     unsafe fn layout(_: usize, _: usize) -> Layout {
         unreachable_unchecked()
     }
@@ -169,21 +155,6 @@ unsafe impl Repr for CNil {
 }
 
 unsafe impl<T, B: Repr> Repr for CoProd<T, B> {
-    type Representation = Cons<ReprItem, B::Representation>;
-    const REPR: Self::Representation = {
-        unsafe fn drop_in_place<T>(ptr: *mut ()) {
-            ptr.cast::<T>().drop_in_place()
-        }
-
-        Cons(
-            ReprItem {
-                drop_in_place: drop_in_place::<T>,
-                layout: Layout::new::<T>(),
-            },
-            B::REPR,
-        )
-    };
-
     unsafe fn layout(index: usize, align: usize) -> Layout {
         if index == 0 {
             Layout::from_size_align_unchecked(
@@ -204,9 +175,48 @@ unsafe impl<T, B: Repr> Repr for CoProd<T, B> {
     }
 }
 
-pub unsafe trait Contains<T, N>: Tuple {}
-unsafe impl<T, R> Contains<T, Z> for CoProd<T, R> where Self: Tuple {}
-unsafe impl<T, R: Contains<T, N>, U, N> Contains<T, S<N>> for CoProd<U, R> where Self: Tuple {}
+pub unsafe trait Contains<T, N>: TypeList {
+    type Remainder: TypeList;
+
+    fn new(value: T) -> Self;
+
+    fn take(self) -> Result<T, Self::Remainder>;
+}
+unsafe impl<T, R: TypeList> Contains<T, Z> for CoProd<T, R>
+where
+    Self: TypeList,
+{
+    type Remainder = R;
+
+    fn new(value: T) -> Self {
+        CoProd::Item(value)
+    }
+
+    fn take(self) -> Result<T, Self::Remainder> {
+        match self {
+            CoProd::Item(value) => Ok(value),
+            CoProd::Rest(rest) => Err(rest),
+        }
+    }
+}
+
+unsafe impl<T, R: Contains<T, N>, U, N> Contains<T, S<N>> for CoProd<U, R>
+where
+    Self: TypeList,
+{
+    type Remainder = CoProd<U, R::Remainder>;
+
+    fn new(value: T) -> Self {
+        CoProd::Rest(R::new(value))
+    }
+
+    fn take(self) -> Result<T, Self::Remainder> {
+        match self {
+            CoProd::Item(value) => Err(CoProd::Item(value)),
+            CoProd::Rest(rest) => Ok(rest.take().map_err(CoProd::Rest)?),
+        }
+    }
+}
 
 pub trait IntoInner: Tuple {
     #[doc(hidden)]
@@ -512,5 +522,105 @@ unsafe impl<T, R: ApplyImp<F, F::Output>, F: Func<T>> Apply<F> for CoProd<T, R> 
     #[inline]
     unsafe fn apply_raw(ptr: *mut (), index: usize, f: F) -> F::Output {
         <Self as ApplyImp<F, F::Output>>::apply_raw(ptr, index, f)
+    }
+}
+
+pub unsafe trait IntoSuperSet<O, L> {
+    fn into_super_set(self) -> O;
+
+    #[doc(hidden)]
+    unsafe fn convert_index(index: usize) -> usize;
+}
+
+unsafe impl IntoSuperSet<CNil, CNil> for CNil {
+    fn into_super_set(self) -> CNil {
+        self
+    }
+
+    unsafe fn convert_index(_: usize) -> usize {
+        unreachable_unchecked()
+    }
+}
+
+unsafe impl<Head, Tail> IntoSuperSet<CoProd<Head, Tail>, CNil> for CNil
+where
+    CNil: IntoSuperSet<Tail, CNil>,
+{
+    fn into_super_set(self) -> CoProd<Head, Tail> {
+        CoProd::Rest(self.into_super_set())
+    }
+
+    unsafe fn convert_index(_: usize) -> usize {
+        unreachable_unchecked()
+    }
+}
+
+unsafe impl<Head, Tail, O, NHead, NTail> IntoSuperSet<O, CoProd<NHead, NTail>>
+    for CoProd<Head, Tail>
+where
+    O: Contains<Head, NHead>,
+    Tail: IntoSuperSet<O, NTail>,
+    NHead: Peano,
+{
+    fn into_super_set(self) -> O {
+        match self {
+            CoProd::Item(value) => O::new(value),
+            CoProd::Rest(rest) => rest.into_super_set(),
+        }
+    }
+
+    unsafe fn convert_index(index: usize) -> usize {
+        if index == 0 {
+            NHead::VALUE
+        } else {
+            Tail::convert_index(index.wrapping_sub(1))
+        }
+    }
+}
+
+pub unsafe trait TryIntoSubSet<S, I>: TypeList {
+    type Remainder: TypeList;
+
+    fn try_into_subset(self) -> Result<S, Self::Remainder>;
+
+    #[doc(hidden)]
+    fn convert_index(index: usize, subset_index: usize) -> Option<usize>;
+}
+
+unsafe impl<Choices: TypeList> TryIntoSubSet<CNil, CNil> for Choices {
+    type Remainder = Self;
+
+    fn try_into_subset(self) -> Result<CNil, Self::Remainder> {
+        Err(self)
+    }
+
+    fn convert_index(_: usize, _: usize) -> Option<usize> {
+        None
+    }
+}
+unsafe impl<Choices, THead, TTail, NHead, NTail>
+    TryIntoSubSet<CoProd<THead, TTail>, CoProd<NHead, NTail>> for Choices
+where
+    Choices: Contains<THead, NHead>,
+    Choices::Remainder: TryIntoSubSet<TTail, NTail>,
+    NHead: Peano,
+{
+    type Remainder = <Choices::Remainder as TryIntoSubSet<TTail, NTail>>::Remainder;
+    fn try_into_subset(self) -> Result<CoProd<THead, TTail>, Self::Remainder> {
+        match self.take() {
+            Ok(value) => Ok(CoProd::Item(value)),
+            Err(rem) => rem.try_into_subset().map(CoProd::Rest),
+        }
+    }
+
+    fn convert_index(index: usize, subset_index: usize) -> Option<usize> {
+        if index == NHead::VALUE {
+            Some(subset_index)
+        } else {
+            <Choices::Remainder as TryIntoSubSet<TTail, NTail>>::convert_index(
+                index,
+                subset_index.wrapping_add(1),
+            )
+        }
     }
 }
