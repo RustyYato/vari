@@ -298,6 +298,7 @@ impl<T: TypeList> Vari<T> {
         T: IntoInner,
     {
         let (ptr, tag) = self.untag();
+        std::mem::forget(self);
         unsafe {
             let _dealloc = internals::DeallocOnDrop(ptr, T::layout(tag, T::ALIGN));
             T::_into_inner(ptr, tag)
@@ -418,7 +419,7 @@ fn test() {
 
     let _: &Box<C> = bx.get();
 
-    match_any!(match bx.get_any() => {
+    match_any!(match bx.into_inner() => {
         _ => ()
         _ => ()
         _ => ()
