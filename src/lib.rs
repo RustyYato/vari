@@ -9,6 +9,7 @@ use core::pin::Pin;
 use core::ptr::NonNull;
 
 mod imp;
+mod imp_pin;
 
 mod internals;
 use internals::*;
@@ -17,7 +18,7 @@ pub mod traits {
     pub use crate::imp::UnpinTuple;
     #[cfg(feature = "nightly")]
     pub use crate::imp::UnsizeAny;
-    pub use crate::internals::{Contains, GetAny, Peano, TypeList};
+    pub use crate::internals::{Contains, GetAny, IntoInner, Peano, TypeList};
 }
 
 pub mod parts {
@@ -33,6 +34,11 @@ macro_rules! tlist {
     ($first:ty $(, $type:ty)* $(,)?) => {
         $crate::parts::CoProd<$first, $crate::tlist!($($type),*)>
     };
+}
+
+#[macro_export]
+macro_rules! vari {
+    ($($items:ty),* $(,)?) => { $crate::Vari<$crate::tlist!($($items),*)> };
 }
 
 #[doc(hidden)]
@@ -75,11 +81,13 @@ macro_rules! match_any {
     };
 }
 
+#[repr(transparent)]
 pub struct Vari<T: TypeList> {
     tagged_ptr: NonNull<()>,
     mark: PhantomData<T>,
 }
 
+#[repr(transparent)]
 pub struct PinVari<T: TypeList>(Vari<T>);
 
 #[cfg(not(feature = "nightly"))]
@@ -282,6 +290,18 @@ impl<T: TypeList> Vari<T> {
     {
         let (ptr, tag) = self.untag();
         unsafe { T::_get_any_mut(ptr, tag) }
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> T
+    where
+        T: IntoInner,
+    {
+        let (ptr, tag) = self.untag();
+        unsafe {
+            let _dealloc = internals::DeallocOnDrop(ptr, T::layout(tag, T::ALIGN));
+            T::_into_inner(ptr, tag)
+        }
     }
 
     #[inline]

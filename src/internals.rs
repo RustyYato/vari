@@ -6,6 +6,14 @@ use core::ptr::NonNull;
 pub trait TypeList: SizeClass + Repr {}
 impl<T: SizeClass + Repr> TypeList for T {}
 
+#[inline(always)]
+unsafe fn unreachable_unchecked() -> ! {
+    #[cfg(debug_assertions)]
+    unreachable!();
+    #[cfg(not(debug_assertions))]
+    core::hint::unreachable_unchecked()
+}
+
 pub enum CNil {}
 pub enum CoProd<A, B> {
     Item(A),
@@ -26,7 +34,7 @@ pub struct ReprItem {
 pub struct Z;
 pub struct S<N>(N);
 
-struct DeallocOnDrop(*mut (), Layout);
+pub struct DeallocOnDrop(pub *mut (), pub Layout);
 impl Drop for DeallocOnDrop {
     #[inline]
     fn drop(&mut self) {
@@ -152,11 +160,11 @@ unsafe impl Repr for CNil {
     const REPR: Self::Representation = Nil;
 
     unsafe fn layout(_: usize, _: usize) -> Layout {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     unsafe fn drop_in_place(_: *mut (), _: usize) {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 }
 
@@ -200,6 +208,11 @@ pub unsafe trait Contains<T, N>: Tuple {}
 unsafe impl<T, R> Contains<T, Z> for CoProd<T, R> where Self: Tuple {}
 unsafe impl<T, R: Contains<T, N>, U, N> Contains<T, S<N>> for CoProd<U, R> where Self: Tuple {}
 
+pub trait IntoInner: Tuple {
+    #[doc(hidden)]
+    unsafe fn _into_inner(ptr: *mut (), index: usize) -> Self;
+}
+
 pub trait GetAny<'a>: Tuple {
     type Ref: 'a;
     type RefMut: 'a;
@@ -218,6 +231,13 @@ pub trait GetAny<'a>: Tuple {
     unsafe fn _pin_get_any_mut(ptr: *mut (), index: usize) -> Self::PinRefMut;
 }
 
+impl IntoInner for CNil {
+    #[inline(always)]
+    unsafe fn _into_inner(_: *mut (), _: usize) -> Self {
+        unreachable_unchecked()
+    }
+}
+
 impl GetAny<'_> for CNil {
     type Ref = CNil;
     type RefMut = CNil;
@@ -226,22 +246,33 @@ impl GetAny<'_> for CNil {
 
     #[inline(always)]
     unsafe fn _get_any(_: *const (), _: usize) -> Self::Ref {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
     unsafe fn _get_any_mut(_: *mut (), _: usize) -> Self::RefMut {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
     unsafe fn _pin_get_any(_: *const (), _: usize) -> Self::PinRef {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
     unsafe fn _pin_get_any_mut(_: *mut (), _: usize) -> Self::PinRefMut {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
+    }
+}
+
+impl<A, B: IntoInner> IntoInner for CoProd<A, B> {
+    #[inline(always)]
+    unsafe fn _into_inner(ptr: *mut (), index: usize) -> Self {
+        if index == 0 {
+            Self::Item(ptr.cast::<A>().read())
+        } else {
+            Self::Rest(B::_into_inner(ptr, index.wrapping_sub(1)))
+        }
     }
 }
 
@@ -306,7 +337,7 @@ pub unsafe trait CloneImp: Sized {
 unsafe impl CloneImp for CNil {
     #[inline(always)]
     unsafe fn clone(_: *const (), _: usize, _: usize) -> NonNull<()> {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
@@ -318,7 +349,7 @@ unsafe impl CloneImp for CNil {
         _: usize,
         _: &mut NonNull<()>,
     ) {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 }
 
@@ -422,17 +453,17 @@ pub unsafe trait ApplyImp<F, O>: Sized {
 unsafe impl<F, O> ApplyImp<F, O> for CNil {
     #[inline(always)]
     unsafe fn apply(_: *const (), _: usize, _: F) -> O {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
     unsafe fn apply_mut(_: *mut (), _: usize, _: F) -> O {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 
     #[inline(always)]
     unsafe fn apply_raw(_: *mut (), _: usize, _: F) -> O {
-        core::hint::unreachable_unchecked()
+        unreachable_unchecked()
     }
 }
 
