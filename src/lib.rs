@@ -333,7 +333,7 @@ impl<T: TypeList> Vari<T> {
         }
     }
 
-    pub fn into_super_set<O: TypeList, I>(self) -> Vari<O>
+    pub fn into_superset<O: TypeList, I>(self) -> Vari<O>
     where
         T: internals::IntoSuperSet<O, I>,
     {
@@ -349,6 +349,20 @@ impl<T: TypeList> Vari<T> {
             Some(sub_index) => unsafe { Ok(self.convert(sub_index)) },
             None => Err(self),
         }
+    }
+
+    pub fn from_subset<O: TypeList, I>(vari: Vari<O>) -> Self
+    where
+        O: internals::IntoSuperSet<T, I>,
+    {
+        vari.into_superset()
+    }
+
+    pub fn try_from_superset<O: TypeList, I>(vari: Vari<O>) -> Result<Self, Vari<O>>
+    where
+        O: internals::TryIntoSubSet<T, I>,
+    {
+        vari.try_into_subset()
     }
 
     #[inline]

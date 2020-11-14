@@ -128,7 +128,7 @@ fn into_superset() {
     type _VariSup = vari!(u32, i32, u8);
 
     let x = _Vari::new(212_u32);
-    let x: _VariSup = x.into_super_set();
+    let x: _VariSup = x.into_superset();
 
     assert_eq!(*x.get::<u32, _>(), 212);
 
