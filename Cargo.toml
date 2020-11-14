@@ -13,3 +13,6 @@ std = []
 nightly = []
 
 [dependencies]
+
+[dev-dependencies]
+mockalloc = '0.1'

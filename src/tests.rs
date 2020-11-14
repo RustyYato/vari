@@ -2,14 +2,22 @@ use super::{match_any, tlist, vari};
 
 use std::boxed::Box;
 
-#[test]
+use mockalloc::Mockalloc;
+use std::alloc::System;
+
+#[global_allocator]
+static ALLOC: Mockalloc<System> = Mockalloc(System);
+
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn create_new() {
     type _Vari = vari!(u8, Box<i32>);
     let _ = _Vari::new(10);
     let _ = _Vari::new(Box::new(0));
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn get() {
     type _Vari = vari!(u8, Box<i32>);
     let x = _Vari::new(10);
@@ -21,9 +29,10 @@ fn get() {
     // assert!(x.try_get::<u32, _>().is_none());
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn set() {
-    type _Vari = vari!(u8, i8, u32);
+    type _Vari = vari!(u8, i8, Box<u32>);
     let mut x = _Vari::new(0xae_u8);
 
     assert_eq!(*x.get::<u8, _>(), 0xae);
@@ -37,11 +46,16 @@ fn set() {
     assert_eq!(*x.get::<i8, _>(), -0xa);
 
     // different in every way
-    x.set(0xefda_u32);
-    assert_eq!(*x.get::<u32, _>(), 0xefda);
+    x.set(Box::new(0xefda_u32));
+    assert_eq!(**x.get::<Box<u32>, _>(), 0xefda);
+
+    // overwrite
+    x.set(-0xa_i8);
+    assert_eq!(*x.get::<i8, _>(), -0xa);
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn clone() {
     type _Vari = vari!(u8, i8, u32);
     let w = _Vari::new(0xae_u8);
@@ -65,7 +79,8 @@ fn clone() {
     assert_eq!(*a.get::<u32, _>(), 0xabcdef01);
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn eq() {
     type _Vari = vari!(u8, i8, u32);
     let w = _Vari::new(0xae_u8);
@@ -104,7 +119,8 @@ fn eq() {
     assert_eq!(z, z);
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn into_superset() {
     type _VariSub = vari!(i32);
     type _Vari = vari!(i32, u32);
@@ -122,17 +138,28 @@ fn into_superset() {
     x.try_into_subset::<tlist!(i32), _>().unwrap_err();
 }
 
-#[test]
+#[cfg_attr(miri, test)]
+#[cfg_attr(not(miri), mockalloc::test)]
 fn match_any() {
-    struct A;
-    struct B;
-    struct C;
+    struct A(u8);
+    struct B(u8);
+    struct C(u8);
 
-    let bx = <vari!(A, B, C)>::new(C);
+    let bx = <vari!(A, B, C)>::new(C(0));
 
     match_any!(match bx.into_inner() => {
         _ => panic!(),
         _ => panic!(),
         _ => ()
     });
+}
+
+#[test]
+fn no_alloc() {
+    let info = mockalloc::record_allocs(|| {
+        <vari!((), u8)>::new(());
+    });
+
+    assert_eq!(info.num_allocs(), 0);
+    assert_eq!(info.num_frees(), 0);
 }
