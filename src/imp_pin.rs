@@ -1,6 +1,7 @@
 use crate::{
     internals::{Apply, Func, TypeList},
     PinVari, Vari,
+    _alloc::AllocStrategy,
 };
 
 use core::cmp::Ordering;
@@ -15,9 +16,11 @@ use core::task::{Context, Poll};
 #[cfg(feature = "std")]
 use std::error::Error;
 
-impl<L: TypeList> Clone for PinVari<L>
+impl<L, S> Clone for PinVari<L, S>
 where
-    Vari<L>: Clone,
+    Vari<L, S>: Clone,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -28,73 +31,95 @@ where
     }
 }
 
-impl<L: TypeList> Eq for PinVari<L> where Vari<L>: Eq {}
-impl<L: TypeList> PartialEq for PinVari<L>
+impl<L, S> Eq for PinVari<L, S>
 where
-    Vari<L>: PartialEq,
+    Vari<L, S>: Eq,
+    L: TypeList,
+    S: AllocStrategy<L>,
+{
+}
+impl<L, S> PartialEq for PinVari<L, S>
+where
+    Vari<L, S>: PartialEq,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<L: TypeList> PartialEq<Vari<L>> for PinVari<L>
+impl<L, S> PartialEq<Vari<L, S>> for PinVari<L, S>
 where
-    Vari<L>: PartialEq,
+    Vari<L, S>: PartialEq,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
-    fn eq(&self, other: &Vari<L>) -> bool {
+    fn eq(&self, other: &Vari<L, S>) -> bool {
         &self.0 == other
     }
 }
 
-impl<L: TypeList> PartialEq<PinVari<L>> for Vari<L>
+impl<L, S> PartialEq<PinVari<L, S>> for Vari<L, S>
 where
-    Vari<L>: PartialEq,
+    Vari<L, S>: PartialEq,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
-    fn eq(&self, other: &PinVari<L>) -> bool {
+    fn eq(&self, other: &PinVari<L, S>) -> bool {
         self == &other.0
     }
 }
 
-impl<L: TypeList> PartialOrd for PinVari<L>
+impl<L, S> PartialOrd for PinVari<L, S>
 where
-    Vari<L>: PartialOrd,
+    Vari<L, S>: PartialOrd,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.0.partial_cmp(&other.0)
     }
 }
 
-impl<L: TypeList> PartialOrd<Vari<L>> for PinVari<L>
+impl<L, S> PartialOrd<Vari<L, S>> for PinVari<L, S>
 where
-    Vari<L>: PartialOrd,
+    Vari<L, S>: PartialOrd,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
-    fn partial_cmp(&self, other: &Vari<L>) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Vari<L, S>) -> Option<Ordering> {
         self.0.partial_cmp(other)
     }
 }
 
-impl<L: TypeList> PartialOrd<PinVari<L>> for Vari<L>
+impl<L, S> PartialOrd<PinVari<L, S>> for Vari<L, S>
 where
-    Vari<L>: PartialOrd,
+    Vari<L, S>: PartialOrd,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
-    fn partial_cmp(&self, other: &PinVari<L>) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &PinVari<L, S>) -> Option<Ordering> {
         self.partial_cmp(&other.0)
     }
 }
 
-impl<L: TypeList> Ord for PinVari<L>
+impl<L, S> Ord for PinVari<L, S>
 where
-    Vari<L>: Ord,
+    Vari<L, S>: Ord,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl<L: TypeList> Hash for PinVari<L>
+impl<L, S> Hash for PinVari<L, S>
 where
-    Vari<L>: Hash,
+    Vari<L, S>: Hash,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
@@ -111,9 +136,10 @@ impl<T: Future> Func<T> for PinFutureImp<'_, '_> {
     }
 }
 
-impl<L, Output> Future for PinVari<L>
+impl<L, S, Output> Future for PinVari<L, S>
 where
     L: TypeList + for<'a, 'b> Apply<PinFutureImp<'a, 'b>, Output = Poll<Output>>,
+    S: AllocStrategy<L>,
 {
     type Output = Output;
 
@@ -124,18 +150,22 @@ where
     }
 }
 
-impl<L: TypeList> fmt::Debug for PinVari<L>
+impl<L, S> fmt::Debug for PinVari<L, S>
 where
-    Vari<L>: fmt::Debug,
+    Vari<L, S>: fmt::Debug,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<L: TypeList> fmt::Display for PinVari<L>
+impl<L, S> fmt::Display for PinVari<L, S>
 where
-    Vari<L>: fmt::Display,
+    Vari<L, S>: fmt::Display,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -143,9 +173,11 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<L: TypeList> Error for PinVari<L>
+impl<L, S> Error for PinVari<L, S>
 where
-    Vari<L>: Error,
+    Vari<L, S>: Error,
+    L: TypeList,
+    S: AllocStrategy<L>,
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.0.source()

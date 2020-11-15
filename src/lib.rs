@@ -14,9 +14,6 @@ mod imp;
 mod imp_pin;
 mod internals;
 
-#[cfg(test)]
-mod tests;
-
 // TODO - docs
 // TODO - add new allocation strategy, first allocate as much as required for biggest variant, then never reallocate
 
@@ -259,7 +256,7 @@ impl<L: TypeList> Vari<L> {
         L: Contains<V, N>,
         N: Peano,
     {
-        Self::with_strategy(value, alloc::BiggestVariant)
+        Self::using_strategy_with(value, alloc::BiggestVariant)
     }
 }
 
@@ -267,7 +264,16 @@ impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
     pub const TAG_BITS: u32 = L::SIZE_CLASS;
 
     #[inline]
-    pub fn with_strategy<N, V, F>(value: F, strategy: S) -> Self
+    pub fn using_strategy<N, V>(value: V, strategy: S) -> Self
+    where
+        L: Contains<V, N>,
+        N: Peano,
+    {
+        Self::using_strategy_with(move || value, strategy)
+    }
+
+    #[inline]
+    pub fn using_strategy_with<N, V, F>(value: F, strategy: S) -> Self
     where
         F: FnOnce() -> V,
         L: Contains<V, N>,
@@ -509,7 +515,7 @@ impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
                 L::drop_in_place(ptr, index);
             }
         } else {
-            *self = Self::with_strategy(value, self.strategy.clone());
+            *self = Self::using_strategy_with(value, self.strategy.clone());
         }
     }
 

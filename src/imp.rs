@@ -20,7 +20,7 @@ use std::error::Error;
 #[cfg(feature = "std")]
 use std::io;
 
-impl<L: TypeList> Unpin for Vari<L> {}
+impl<L: TypeList, S: AllocStrategy<L>> Unpin for Vari<L, S> {}
 
 impl<L: CloneImp + TypeList, S: AllocStrategy<L>> Clone for Vari<L, S> {
     #[inline]
@@ -65,8 +65,10 @@ impl<T: fmt::Debug> Func<T> for DebugImp<'_, '_> {
     }
 }
 
-impl<L: TypeList + for<'a, 'b> Apply<DebugImp<'a, 'b>, Output = fmt::Result>> fmt::Debug
-    for Vari<L>
+impl<L, S> fmt::Debug for Vari<L, S>
+where
+    S: AllocStrategy<L>,
+    L: TypeList + for<'a, 'b> Apply<DebugImp<'a, 'b>, Output = fmt::Result>,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -85,8 +87,10 @@ impl<T: fmt::Display> Func<T> for DisplayImp<'_, '_> {
     }
 }
 
-impl<L: TypeList + for<'a, 'b> Apply<DisplayImp<'a, 'b>, Output = fmt::Result>> fmt::Display
-    for Vari<L>
+impl<L, S> fmt::Display for Vari<L, S>
+where
+    S: AllocStrategy<L>,
+    L: TypeList + for<'a, 'b> Apply<DisplayImp<'a, 'b>, Output = fmt::Result>,
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -109,13 +113,20 @@ impl<T: PartialEq> Func<T> for EqImp {
     type Output = ();
 }
 
-impl<L> Eq for Vari<L> where L: TypeList + Apply<PartialEqImp, Output = bool> + Apply<EqImp> {}
-impl<L> PartialEq for Vari<L>
+impl<L, S> Eq for Vari<L, S>
 where
+    L: TypeList + Apply<PartialEqImp, Output = bool> + Apply<EqImp>,
+    S: AllocStrategy<L>,
+{
+}
+impl<L, S1, S2> PartialEq<Vari<L, S2>> for Vari<L, S1>
+where
+    S1: AllocStrategy<L>,
+    S2: AllocStrategy<L>,
     L: TypeList + Apply<PartialEqImp, Output = bool>,
 {
     #[inline]
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, other: &Vari<L, S2>) -> bool {
         let (ptr, index) = self.split();
         let (optr, oindex) = other.split();
         index == oindex && unsafe { L::apply(ptr, index, PartialEqImp(optr)) }
@@ -130,15 +141,17 @@ impl<T: PartialOrd> Func<T> for PartialOrdImp {
         unsafe { value.partial_cmp(&*(self.0 as *const T)) }
     }
 }
-impl<L> PartialOrd for Vari<L>
+impl<L, S1, S2> PartialOrd<Vari<L, S2>> for Vari<L, S1>
 where
+    S1: AllocStrategy<L>,
+    S2: AllocStrategy<L>,
     L: TypeList
         + Apply<PartialEqImp, Output = bool>
         + Apply<EqImp>
         + Apply<PartialOrdImp, Output = Option<Ordering>>,
 {
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Vari<L, S2>) -> Option<Ordering> {
         let (ptr, index) = self.split();
         let (optr, oindex) = other.split();
         match index.cmp(&oindex) {
@@ -156,8 +169,9 @@ impl<T: Ord> Func<T> for OrdImp {
         unsafe { value.cmp(&*(self.0 as *const T)) }
     }
 }
-impl<L> Ord for Vari<L>
+impl<L, S> Ord for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList
         + Apply<PartialEqImp, Output = bool>
         + Apply<EqImp>
@@ -182,7 +196,11 @@ impl<T: Hash> Func<T> for HashImp<'_> {
         value.hash(&mut { self.0 })
     }
 }
-impl<L: TypeList + for<'a> Apply<HashImp<'a>>> Hash for Vari<L> {
+impl<L, S> Hash for Vari<L, S>
+where
+    S: AllocStrategy<L>,
+    L: TypeList + for<'a> Apply<HashImp<'a>>,
+{
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         let (ptr, index) = self.split();
@@ -236,8 +254,9 @@ impl<T: Hasher> Func<T> for HasherFinishImp {
         value.finish()
     }
 }
-impl<L> Hasher for Vari<L>
+impl<L, S> Hasher for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList + for<'a> Apply<HasherImp<'a>> + Apply<HasherFinishImp, Output = u64>,
 {
     fn finish(&self) -> u64 {
@@ -370,8 +389,9 @@ impl<T: Extend<I>, I> Func<T> for ExtendImp<'_, I> {
     }
 }
 
-impl<L, Item> Iterator for Vari<L>
+impl<L, S, Item> Iterator for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>,
@@ -397,8 +417,9 @@ where
     }
 }
 
-impl<L, Item> DoubleEndedIterator for Vari<L>
+impl<L, S, Item> DoubleEndedIterator for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<DoubleEndedIteratorImp, Output = Option<Item>>
@@ -417,24 +438,29 @@ where
     }
 }
 
-impl<L, Item> FusedIterator for Vari<L> where
+impl<L, S, Item> FusedIterator for Vari<L, S>
+where
+    S: AllocStrategy<L>,
     L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<FusedIteratorImp>
-        + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>
+        + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>,
 {
 }
 
-impl<L, Item> ExactSizeIterator for Vari<L> where
+impl<L, S, Item> ExactSizeIterator for Vari<L, S>
+where
+    S: AllocStrategy<L>,
     L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<ExactSizeIteratorImp>
-        + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>
+        + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>,
 {
 }
 
-impl<L, A> Extend<A> for Vari<L>
+impl<L, S, A> Extend<A> for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList + for<'a> Apply<ExtendImp<'a, A>>,
 {
     fn extend<I: IntoIterator<Item = A>>(&mut self, iter: I) {
@@ -455,8 +481,9 @@ impl<T: Future + Unpin> Func<T> for FutureImp<'_, '_> {
     }
 }
 
-impl<L, Output> Future for Vari<L>
+impl<L, S, Output> Future for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList + for<'a, 'b> Apply<FutureImp<'a, 'b>, Output = Poll<Output>>,
 {
     type Output = Output;
@@ -515,8 +542,9 @@ impl<T: io::Read> Func<T> for ReadImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<L> io::Read for Vari<L>
+impl<L, S> io::Read for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList + for<'a> Apply<ReadImp<'a>, Output = io::Result<usize>>,
 {
     #[inline]
@@ -579,8 +607,9 @@ impl<T: io::Write> Func<T> for WriteExtImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<L> io::Write for Vari<L>
+impl<L, S> io::Write for Vari<L, S>
 where
+    S: AllocStrategy<L>,
     L: TypeList
         + for<'a> Apply<WriteBaseImp<'a>, Output = io::Result<usize>>
         + for<'a> Apply<WriteExtImp<'a>, Output = io::Result<()>>,
@@ -624,7 +653,11 @@ impl<T: io::Seek> Func<T> for SeekImp {
 }
 
 #[cfg(feature = "std")]
-impl<L: TypeList + Apply<SeekImp, Output = io::Result<u64>>> io::Seek for Vari<L> {
+impl<L, S> io::Seek for Vari<L, S>
+where
+    S: AllocStrategy<L>,
+    L: TypeList + Apply<SeekImp, Output = io::Result<u64>>,
+{
     #[inline]
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
         let (ptr, index) = self.split();
@@ -676,9 +709,10 @@ impl<'a, T: 'a + io::BufRead> Func<T> for BufReadExtImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<L> io::BufRead for Vari<L>
+impl<L, S> io::BufRead for Vari<L, S>
 where
     Self: io::Read,
+    S: AllocStrategy<L>,
     L: TypeList
         + for<'a> Apply<BufReadFillImp<'a>, Output = io::Result<&'a [u8]>>
         + Apply<BufReadConsumeImp>
@@ -725,9 +759,10 @@ impl<'a, T: 'a + Error> Func<T> for ErrorImp<'a> {
 }
 
 #[cfg(feature = "std")]
-impl<L> Error for Vari<L>
+impl<L, S> Error for Vari<L, S>
 where
     Self: fmt::Debug + fmt::Display,
+    S: AllocStrategy<L>,
     L: TypeList + for<'a> Apply<ErrorImp<'a>, Output = Option<&'a (dyn Error + 'static)>>,
 {
     fn cause(&self) -> Option<&dyn Error> {
