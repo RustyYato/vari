@@ -5,14 +5,13 @@
 extern crate alloc as std;
 
 use core::marker::PhantomData;
-use core::pin::Pin;
 use core::ptr::NonNull;
 
 #[path = "alloc.rs"]
 mod _alloc;
 mod imp;
-mod imp_pin;
 mod internals;
+mod pin;
 
 // TODO - docs
 // TODO - add new allocation strategy, first allocate as much as required for biggest variant, then never reallocate
@@ -38,6 +37,7 @@ pub mod parts {
 
 include!(concat!(env!("OUT_DIR"), "/aliases.rs"));
 
+pub use pin::PinVari;
 use traits::*;
 
 #[macro_export]
@@ -100,9 +100,6 @@ pub struct Vari<L: TypeList, S: AllocStrategy<L> = _alloc::DefaultStrategy> {
     mark: PhantomData<L>,
 }
 
-#[repr(transparent)]
-pub struct PinVari<L: TypeList, S: AllocStrategy<L> = _alloc::DefaultStrategy>(Vari<L, S>);
-
 #[cfg(not(feature = "nightly"))]
 impl<L: TypeList, S: AllocStrategy<L>> Drop for Vari<L, S> {
     fn drop(&mut self) {
@@ -116,127 +113,6 @@ unsafe impl<#[may_dangle] L: TypeList> Drop for Vari<L> {
     fn drop(&mut self) {
         let (ptr, index) = self.split();
         unsafe { internals::destroy::<L>(ptr, index) }
-    }
-}
-
-impl<L: TypeList, S: AllocStrategy<L>> PinVari<L, S> {
-    pub unsafe fn into_inner_unchecked(self) -> Vari<L, S> {
-        self.0
-    }
-
-    pub fn into_inner(self) -> Vari<L, S>
-    where
-        L: imp::UnpinTuple,
-    {
-        unsafe { self.into_inner_unchecked() }
-    }
-
-    #[inline]
-    pub fn as_ptr(&self) -> *mut () {
-        self.0.split().0
-    }
-
-    #[inline]
-    pub fn index(&self) -> usize {
-        self.0.split().1
-    }
-
-    #[inline]
-    pub fn index_of<A, N>() -> usize
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        N::VALUE
-    }
-
-    #[inline]
-    pub fn is<A, N>(&self) -> bool
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        self.0.is()
-    }
-
-    #[inline]
-    pub fn get_any<'a>(&'a self) -> L::PinRef
-    where
-        L: GetAny<'a>,
-    {
-        let (ptr, index) = self.0.split();
-        unsafe { L::_pin_get_any(ptr, index) }
-    }
-
-    #[inline]
-    pub fn get_any_mut<'a>(&'a self) -> L::PinRefMut
-    where
-        L: GetAny<'a>,
-    {
-        let (ptr, index) = self.0.split();
-        unsafe { L::_pin_get_any_mut(ptr, index) }
-    }
-
-    #[inline]
-    pub fn get<'a, A, N>(&self) -> Pin<&A>
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        unsafe { Pin::new_unchecked(self.0.get()) }
-    }
-
-    #[inline]
-    pub fn get_mut<'a, A, N>(&mut self) -> Pin<&mut A>
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        unsafe { Pin::new_unchecked(self.0.get_mut()) }
-    }
-
-    #[inline]
-    pub fn try_get<'a, A, N>(&self) -> Option<Pin<&A>>
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        self.0.try_get().map(|x| unsafe { Pin::new_unchecked(x) })
-    }
-
-    #[inline]
-    pub fn try_get_mut<'a, A, N>(&mut self) -> Option<Pin<&mut A>>
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        self.0
-            .try_get_mut()
-            .map(|x| unsafe { Pin::new_unchecked(x) })
-    }
-
-    pub fn set<N, A>(&mut self, value: A)
-    where
-        L: Contains<A, N>,
-        N: Peano,
-    {
-        self.0.set(value)
-    }
-
-    #[cfg(feature = "nightly")]
-    pub fn unsize<U: ?Sized>(&self) -> &U
-    where
-        L: imp::UnsizeAny<U, Output = *mut U>,
-    {
-        self.0.unsize()
-    }
-
-    #[cfg(feature = "nightly")]
-    pub fn unsize_mut<U: ?Sized>(&mut self) -> &mut U
-    where
-        L: imp::UnsizeAny<U, Output = *mut U>,
-    {
-        self.0.unsize_mut()
     }
 }
 
@@ -307,7 +183,7 @@ impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
     }
 
     pub fn pin(self) -> PinVari<L, S> {
-        PinVari(self)
+        PinVari::from(self)
     }
 
     #[inline]
