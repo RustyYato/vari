@@ -3,6 +3,8 @@ use core::ops::*;
 use core::pin::Pin;
 use core::ptr::NonNull;
 
+use crate::_alloc::AllocStrategy;
+
 pub trait TypeList: SizeClass + Repr + Tuple {}
 impl<T: SizeClass + Repr + Tuple> TypeList for T {}
 
@@ -49,8 +51,14 @@ pub const unsafe fn layout<T>(align: usize) -> Layout {
     )
 }
 
-pub fn new_with<T, F: FnOnce() -> T>(value: F, align: usize, index: usize) -> NonNull<()> {
-    let layout = unsafe { layout::<T>(align) };
+#[inline]
+pub fn new_with<L, S, T, F>(value: F, align: usize, index: usize, strategy: &S) -> NonNull<()>
+where
+    L: TypeList,
+    F: FnOnce() -> T,
+    S: AllocStrategy<L>,
+{
+    let layout = strategy.layout(index);
     raw_new_with(
         move |ptr: *mut ()| unsafe { ptr.cast::<T>().write(value()) },
         layout,
@@ -92,22 +100,22 @@ pub fn raw_new_with<F: FnOnce(*mut ())>(
     unsafe { NonNull::new_unchecked(ptr) }
 }
 
-pub unsafe fn destroy<T: TypeList>(ptr: *mut (), index: usize) {
-    let layout = T::layout(index, T::ALIGN);
+pub unsafe fn destroy<L: TypeList, S: AllocStrategy<L>>(ptr: *mut (), index: usize, strategy: &S) {
+    let layout = strategy.layout(index);
     let _dealloc = DeallocOnDrop(ptr, layout);
-    T::drop_in_place(ptr, index);
+    L::drop_in_place(ptr, index);
 }
 
 pub unsafe trait Tuple {
-    const COUNT: u64;
+    const COUNT: usize;
 }
 
 unsafe impl Tuple for CNil {
-    const COUNT: u64 = 0;
+    const COUNT: usize = 0;
 }
 
 unsafe impl<A, R: Tuple> Tuple for CoProd<A, R> {
-    const COUNT: u64 = R::COUNT + 1;
+    const COUNT: usize = R::COUNT + 1;
 }
 
 pub unsafe trait SizeClass {
@@ -140,13 +148,24 @@ impl<N: Peano> Peano for S<N> {
 }
 
 pub unsafe trait Repr {
-    unsafe fn layout(index: usize, align: usize) -> Layout;
+    unsafe fn layout_min(index: usize, align: usize) -> Layout;
+    fn layout_max(acc: Layout) -> Layout;
+    unsafe fn layout_max_unchecked(acc: Layout) -> Layout;
+
     unsafe fn drop_in_place(ptr: *mut (), index: usize);
 }
 
 unsafe impl Repr for CNil {
-    unsafe fn layout(_: usize, _: usize) -> Layout {
+    unsafe fn layout_min(_: usize, _: usize) -> Layout {
         unreachable_unchecked()
+    }
+
+    fn layout_max(acc: Layout) -> Layout {
+        acc
+    }
+
+    unsafe fn layout_max_unchecked(acc: Layout) -> Layout {
+        acc
     }
 
     unsafe fn drop_in_place(_: *mut (), _: usize) {
@@ -155,15 +174,32 @@ unsafe impl Repr for CNil {
 }
 
 unsafe impl<T, B: Repr> Repr for CoProd<T, B> {
-    unsafe fn layout(index: usize, align: usize) -> Layout {
+    unsafe fn layout_min(index: usize, align: usize) -> Layout {
         if index == 0 {
             Layout::from_size_align_unchecked(
                 core::mem::size_of::<T>(),
                 core::mem::align_of::<T>().max(align),
             )
         } else {
-            B::layout(index.wrapping_sub(1), align)
+            B::layout_min(index.wrapping_sub(1), align)
         }
+    }
+
+    fn layout_max(acc: Layout) -> Layout {
+        B::layout_max(
+            Layout::from_size_align(
+                core::mem::size_of::<T>().max(acc.size()),
+                core::mem::align_of::<T>().max(acc.align()),
+            )
+            .unwrap(),
+        )
+    }
+
+    unsafe fn layout_max_unchecked(acc: Layout) -> Layout {
+        B::layout_max(Layout::from_size_align_unchecked(
+            core::mem::size_of::<T>().max(acc.size()),
+            core::mem::align_of::<T>().max(acc.align()),
+        ))
     }
 
     unsafe fn drop_in_place(ptr: *mut (), index: usize) {
@@ -333,8 +369,14 @@ where
 }
 
 pub unsafe trait CloneImp: Sized {
-    unsafe fn clone(ptr: *const (), align: usize, index: usize) -> NonNull<()>;
-    unsafe fn clone_from<T: TypeList>(
+    unsafe fn clone<L: TypeList, S: AllocStrategy<L>>(
+        strategy: &S,
+        ptr: *const (),
+        align: usize,
+        index: usize,
+    ) -> NonNull<()>;
+    unsafe fn clone_from<L: TypeList, S: AllocStrategy<L>>(
+        strategy: &S,
         ptr: *mut (),
         index: usize,
         src_ptr: *const (),
@@ -346,12 +388,18 @@ pub unsafe trait CloneImp: Sized {
 
 unsafe impl CloneImp for CNil {
     #[inline(always)]
-    unsafe fn clone(_: *const (), _: usize, _: usize) -> NonNull<()> {
+    unsafe fn clone<L: TypeList, S: AllocStrategy<L>>(
+        _: &S,
+        _: *const (),
+        _: usize,
+        _: usize,
+    ) -> NonNull<()> {
         unreachable_unchecked()
     }
 
     #[inline(always)]
-    unsafe fn clone_from<T: TypeList>(
+    unsafe fn clone_from<L: TypeList, S: AllocStrategy<L>>(
+        _: &S,
         _: *mut (),
         _: usize,
         _: *const (),
@@ -365,16 +413,22 @@ unsafe impl CloneImp for CNil {
 
 unsafe impl<T: Clone, R: CloneImp> CloneImp for CoProd<T, R> {
     #[inline]
-    unsafe fn clone(ptr: *const (), align: usize, index: usize) -> NonNull<()> {
+    unsafe fn clone<L: TypeList, S: AllocStrategy<L>>(
+        strategy: &S,
+        ptr: *const (),
+        align: usize,
+        index: usize,
+    ) -> NonNull<()> {
         if index == 0 {
             let this = &*(ptr as *const T);
-            new_with(|| this.clone(), align, index)
+            new_with::<L, _, _, _>(|| this.clone(), align, index, strategy)
         } else {
-            R::clone(ptr, align, index.wrapping_sub(1))
+            R::clone::<L, S>(strategy, ptr, align, index.wrapping_sub(1))
         }
     }
 
-    unsafe fn clone_from<L: TypeList>(
+    unsafe fn clone_from<L: TypeList, S: AllocStrategy<L>>(
+        strategy: &S,
         ptr: *mut (),
         index: usize,
         src_ptr: *const (),
@@ -397,28 +451,32 @@ unsafe impl<T: Clone, R: CloneImp> CloneImp for CoProd<T, R> {
                     }
                 }
 
-                struct OnDrop(unsafe fn(*mut (), usize), *mut (), usize);
+                struct OnDrop<'a, S>(unsafe fn(*mut (), usize, &'a S), *mut (), usize, &'a S);
 
-                impl Drop for OnDrop {
+                impl<S> Drop for OnDrop<'_, S> {
                     fn drop(&mut self) {
-                        unsafe { (self.0)(self.1, self.2) }
+                        unsafe { (self.0)(self.1, self.2, self.3) }
                     }
                 }
 
-                let layout = L::layout(index, L::ALIGN);
-                let src_layout = L::layout(src_index, L::ALIGN);
-
-                if layout == src_layout {
+                if strategy.matches_index_layout(index, src_index) {
                     let _write = WriteOnDrop(ptr, Some(source.clone()));
                     *tagged_ptr = NonNull::new_unchecked((ptr as usize | src_index) as *mut ());
                     L::drop_in_place(ptr, index);
                 } else {
-                    let _on_drop = OnDrop(destroy::<L>, ptr, index);
-                    *tagged_ptr = new_with(|| source.clone(), src_layout.align(), src_index);
+                    let src_layout = strategy.layout(src_index);
+                    let _on_drop = OnDrop(destroy::<L, S>, ptr, index, strategy);
+                    *tagged_ptr = new_with::<L, _, _, _>(
+                        || source.clone(),
+                        src_layout.align(),
+                        src_index,
+                        strategy,
+                    );
                 }
             }
         } else {
-            R::clone_from::<L>(
+            R::clone_from::<L, S>(
+                strategy,
                 ptr,
                 index,
                 src_ptr,

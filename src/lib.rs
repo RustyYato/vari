@@ -8,20 +8,20 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
 
+#[path = "alloc.rs"]
+mod _alloc;
 mod imp;
 mod imp_pin;
-
 mod internals;
 
 #[cfg(test)]
 mod tests;
 
 // TODO - docs
-// TODO - safety tests
-// TODO - validity tests
+// TODO - add new allocation strategy, first allocate as much as required for biggest variant, then never reallocate
 
-use traits::*;
 pub mod traits {
+    pub use crate::_alloc::AllocStrategy;
     pub use crate::imp::UnpinTuple;
     #[cfg(feature = "nightly")]
     pub use crate::imp::UnsizeAny;
@@ -30,12 +30,18 @@ pub mod traits {
     };
 }
 
+pub mod alloc {
+    pub use crate::_alloc::{BiggestVariant, Minimal};
+}
+
 pub mod parts {
     pub use crate::internals::{CNil, CoProd, S, Z};
     include!(concat!(env!("OUT_DIR"), "/num.rs"));
 }
 
 include!(concat!(env!("OUT_DIR"), "/aliases.rs"));
+
+use traits::*;
 
 #[macro_export]
 macro_rules! tlist {
@@ -90,57 +96,58 @@ macro_rules! match_any {
     };
 }
 
-#[repr(transparent)]
-pub struct Vari<T: TypeList> {
+#[repr(C)]
+pub struct Vari<L: TypeList, S: AllocStrategy<L> = _alloc::DefaultStrategy> {
     tagged_ptr: NonNull<()>,
-    mark: PhantomData<T>,
+    strategy: S,
+    mark: PhantomData<L>,
 }
 
 #[repr(transparent)]
-pub struct PinVari<T: TypeList>(Vari<T>);
+pub struct PinVari<L: TypeList, S: AllocStrategy<L> = _alloc::DefaultStrategy>(Vari<L, S>);
 
 #[cfg(not(feature = "nightly"))]
-impl<T: TypeList> Drop for Vari<T> {
+impl<L: TypeList, S: AllocStrategy<L>> Drop for Vari<L, S> {
     fn drop(&mut self) {
-        let (ptr, tag) = self.untag();
-        unsafe { internals::destroy::<T>(ptr, tag) }
+        let (ptr, index) = self.split();
+        unsafe { internals::destroy::<L, S>(ptr, index, &self.strategy) }
     }
 }
 
 #[cfg(feature = "nightly")]
-unsafe impl<#[may_dangle] T: TypeList> Drop for Vari<T> {
+unsafe impl<#[may_dangle] L: TypeList> Drop for Vari<L> {
     fn drop(&mut self) {
-        let (ptr, tag) = self.untag();
-        unsafe { internals::destroy::<T>(ptr, tag) }
+        let (ptr, index) = self.split();
+        unsafe { internals::destroy::<L>(ptr, index) }
     }
 }
 
-impl<T: TypeList> PinVari<T> {
-    pub unsafe fn into_inner_unchecked(self) -> Vari<T> {
+impl<L: TypeList, S: AllocStrategy<L>> PinVari<L, S> {
+    pub unsafe fn into_inner_unchecked(self) -> Vari<L, S> {
         self.0
     }
 
-    pub fn into_inner(self) -> Vari<T>
+    pub fn into_inner(self) -> Vari<L, S>
     where
-        T: imp::UnpinTuple,
+        L: imp::UnpinTuple,
     {
         unsafe { self.into_inner_unchecked() }
     }
 
     #[inline]
     pub fn as_ptr(&self) -> *mut () {
-        self.0.untag().0
+        self.0.split().0
     }
 
     #[inline]
-    pub fn tag(&self) -> usize {
-        self.0.untag().1
+    pub fn index(&self) -> usize {
+        self.0.split().1
     }
 
     #[inline]
-    pub fn tag_for<A, N>() -> usize
+    pub fn index_of<A, N>() -> usize
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         N::VALUE
@@ -149,34 +156,34 @@ impl<T: TypeList> PinVari<T> {
     #[inline]
     pub fn is<A, N>(&self) -> bool
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         self.0.is()
     }
 
     #[inline]
-    pub fn get_any<'a>(&'a self) -> T::PinRef
+    pub fn get_any<'a>(&'a self) -> L::PinRef
     where
-        T: GetAny<'a>,
+        L: GetAny<'a>,
     {
-        let (ptr, tag) = self.0.untag();
-        unsafe { T::_pin_get_any(ptr, tag) }
+        let (ptr, index) = self.0.split();
+        unsafe { L::_pin_get_any(ptr, index) }
     }
 
     #[inline]
-    pub fn get_any_mut<'a>(&'a self) -> T::PinRefMut
+    pub fn get_any_mut<'a>(&'a self) -> L::PinRefMut
     where
-        T: GetAny<'a>,
+        L: GetAny<'a>,
     {
-        let (ptr, tag) = self.0.untag();
-        unsafe { T::_pin_get_any_mut(ptr, tag) }
+        let (ptr, index) = self.0.split();
+        unsafe { L::_pin_get_any_mut(ptr, index) }
     }
 
     #[inline]
     pub fn get<'a, A, N>(&self) -> Pin<&A>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         unsafe { Pin::new_unchecked(self.0.get()) }
@@ -185,7 +192,7 @@ impl<T: TypeList> PinVari<T> {
     #[inline]
     pub fn get_mut<'a, A, N>(&mut self) -> Pin<&mut A>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         unsafe { Pin::new_unchecked(self.0.get_mut()) }
@@ -194,7 +201,7 @@ impl<T: TypeList> PinVari<T> {
     #[inline]
     pub fn try_get<'a, A, N>(&self) -> Option<Pin<&A>>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         self.0.try_get().map(|x| unsafe { Pin::new_unchecked(x) })
@@ -203,7 +210,7 @@ impl<T: TypeList> PinVari<T> {
     #[inline]
     pub fn try_get_mut<'a, A, N>(&mut self) -> Option<Pin<&mut A>>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         self.0
@@ -213,7 +220,7 @@ impl<T: TypeList> PinVari<T> {
 
     pub fn set<N, A>(&mut self, value: A)
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         self.0.set(value)
@@ -222,7 +229,7 @@ impl<T: TypeList> PinVari<T> {
     #[cfg(feature = "nightly")]
     pub fn unsize<U: ?Sized>(&self) -> &U
     where
-        T: imp::UnsizeAny<U, Output = *mut U>,
+        L: imp::UnsizeAny<U, Output = *mut U>,
     {
         self.0.unsize()
     }
@@ -230,19 +237,17 @@ impl<T: TypeList> PinVari<T> {
     #[cfg(feature = "nightly")]
     pub fn unsize_mut<U: ?Sized>(&mut self) -> &mut U
     where
-        T: imp::UnsizeAny<U, Output = *mut U>,
+        L: imp::UnsizeAny<U, Output = *mut U>,
     {
         self.0.unsize_mut()
     }
 }
 
-impl<T: TypeList> Vari<T> {
-    pub const TAG_BITS: u32 = T::SIZE_CLASS;
-
+impl<L: TypeList> Vari<L> {
     #[inline]
     pub fn new<N, V>(value: V) -> Self
     where
-        T: Contains<V, N>,
+        L: Contains<V, N>,
         N: Peano,
     {
         Self::new_with(move || value)
@@ -251,42 +256,57 @@ impl<T: TypeList> Vari<T> {
     #[inline]
     pub fn new_with<N, V, F: FnOnce() -> V>(value: F) -> Self
     where
-        T: Contains<V, N>,
+        L: Contains<V, N>,
+        N: Peano,
+    {
+        Self::with_strategy(value, alloc::BiggestVariant)
+    }
+}
+
+impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
+    pub const TAG_BITS: u32 = L::SIZE_CLASS;
+
+    #[inline]
+    pub fn with_strategy<N, V, F>(value: F, strategy: S) -> Self
+    where
+        F: FnOnce() -> V,
+        L: Contains<V, N>,
         N: Peano,
     {
         Self {
-            tagged_ptr: internals::new_with(value, T::ALIGN, N::VALUE),
+            tagged_ptr: internals::new_with(value, L::ALIGN, N::VALUE, &strategy),
+            strategy,
             mark: PhantomData,
         }
     }
 
-    pub fn pin(self) -> PinVari<T> {
+    pub fn pin(self) -> PinVari<L, S> {
         PinVari(self)
     }
 
     #[inline]
-    fn untag(&self) -> (*mut (), usize) {
-        fn untag(tagged_ptr: *mut (), mask: usize) -> (*mut (), usize) {
+    fn split(&self) -> (*mut (), usize) {
+        fn split(tagged_ptr: *mut (), mask: usize) -> (*mut (), usize) {
             let tagged_ptr = tagged_ptr as usize;
             ((tagged_ptr & !mask) as *mut (), tagged_ptr & mask)
         }
-        untag(self.tagged_ptr.as_ptr(), T::ALIGN - 1)
+        split(self.tagged_ptr.as_ptr(), L::ALIGN - 1)
     }
 
     #[inline]
     pub fn as_ptr(&self) -> *mut () {
-        self.untag().0
+        self.split().0
     }
 
     #[inline]
-    pub fn tag(&self) -> usize {
-        self.untag().1
+    pub fn index(&self) -> usize {
+        self.split().1
     }
 
     #[inline]
-    pub fn tag_for<A, N>() -> usize
+    pub fn index_of<A, N>() -> usize
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         N::VALUE
@@ -295,111 +315,120 @@ impl<T: TypeList> Vari<T> {
     #[inline]
     pub fn is<A, N>(&self) -> bool
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
-        N::VALUE == self.tag()
+        N::VALUE == self.index()
     }
 
-    unsafe fn convert<O: TypeList>(self, other_tag: usize) -> Vari<O> {
-        let (ptr, tag) = self.untag();
+    unsafe fn convert<O>(self, other_index: usize) -> Vari<O, S>
+    where
+        O: TypeList,
+        S: AllocStrategy<O>,
+    {
+        let (ptr, index) = self.split();
+        let strategy = core::ptr::read(&self.strategy);
         core::mem::forget(self);
 
-        let layout = T::layout(tag, T::ALIGN);
-        let super_layout = O::layout(other_tag, O::ALIGN);
+        let layout = AllocStrategy::<L>::layout(&strategy, index);
+        let super_layout = AllocStrategy::<O>::layout(&strategy, other_index);
 
         assert_eq!(layout.size(), super_layout.size());
 
-        if layout == super_layout {
-            let tagged_ptr = NonNull::new_unchecked(((ptr as usize) | other_tag) as *mut ());
-
-            Vari {
-                tagged_ptr,
-                mark: PhantomData,
-            }
+        let tagged_ptr = if layout == super_layout {
+            NonNull::new_unchecked(((ptr as usize) | other_index) as *mut ())
         } else {
             let size = layout.size();
             let _dealloc = internals::DeallocOnDrop(ptr.cast(), layout);
+            internals::raw_new_with(
+                |out| out.copy_from_nonoverlapping(ptr, size),
+                super_layout,
+                O::ALIGN,
+                other_index,
+            )
+        };
 
-            Vari {
-                tagged_ptr: internals::raw_new_with(
-                    |out| out.copy_from_nonoverlapping(ptr, size),
-                    super_layout,
-                    O::ALIGN,
-                    other_tag,
-                ),
-                mark: PhantomData,
-            }
+        Vari {
+            tagged_ptr,
+            strategy,
+            mark: PhantomData,
         }
     }
 
-    pub fn into_superset<O: TypeList, I>(self) -> Vari<O>
+    pub fn into_superset<O, I>(self) -> Vari<O, S>
     where
-        T: internals::IntoSuperSet<O, I>,
+        O: TypeList,
+        S: AllocStrategy<O>,
+        L: internals::IntoSuperSet<O, I>,
     {
-        let tag = self.tag();
-        unsafe { self.convert(T::convert_index(tag)) }
+        let index = self.index();
+        unsafe { self.convert(L::convert_index(index)) }
     }
 
-    pub fn try_into_subset<O: TypeList, I>(self) -> Result<Vari<O>, Self>
+    pub fn try_into_subset<O, I>(self) -> Result<Vari<O, S>, Self>
     where
-        T: internals::TryIntoSubSet<O, I>,
+        O: TypeList,
+        S: AllocStrategy<O>,
+        L: internals::TryIntoSubSet<O, I>,
     {
-        match T::convert_index(self.tag(), 0) {
+        match L::convert_index(self.index(), 0) {
             Some(sub_index) => unsafe { Ok(self.convert(sub_index)) },
             None => Err(self),
         }
     }
 
-    pub fn from_subset<O: TypeList, I>(vari: Vari<O>) -> Self
+    pub fn from_subset<O, I>(vari: Vari<O, S>) -> Self
     where
-        O: internals::IntoSuperSet<T, I>,
+        O: TypeList + internals::IntoSuperSet<L, I>,
+        S: AllocStrategy<O>,
     {
         vari.into_superset()
     }
 
-    pub fn try_from_superset<O: TypeList, I>(vari: Vari<O>) -> Result<Self, Vari<O>>
+    pub fn try_from_superset<O, I>(vari: Vari<O, S>) -> Result<Self, Vari<O, S>>
     where
-        O: internals::TryIntoSubSet<T, I>,
+        O: TypeList + internals::TryIntoSubSet<L, I>,
+        S: AllocStrategy<O>,
     {
         vari.try_into_subset()
     }
 
     #[inline]
-    pub fn get_any<'a>(&'a self) -> T::Ref
+    pub fn get_any<'a>(&'a self) -> L::Ref
     where
-        T: GetAny<'a>,
+        L: GetAny<'a>,
     {
-        let (ptr, tag) = self.untag();
-        unsafe { T::_get_any(ptr, tag) }
+        let (ptr, index) = self.split();
+        unsafe { L::_get_any(ptr, index) }
     }
 
     #[inline]
-    pub fn get_any_mut<'a>(&'a self) -> T::RefMut
+    pub fn get_any_mut<'a>(&'a self) -> L::RefMut
     where
-        T: GetAny<'a>,
+        L: GetAny<'a>,
     {
-        let (ptr, tag) = self.untag();
-        unsafe { T::_get_any_mut(ptr, tag) }
+        let (ptr, index) = self.split();
+        unsafe { L::_get_any_mut(ptr, index) }
     }
 
     #[inline]
-    pub fn into_inner(self) -> T
+    pub fn into_inner(self) -> L
     where
-        T: IntoInner,
+        L: IntoInner,
     {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
+        let strategy = unsafe { core::ptr::read(&self.strategy) };
         core::mem::forget(self);
         unsafe {
-            let _dealloc = internals::DeallocOnDrop(ptr, T::layout(tag, T::ALIGN));
-            T::_into_inner(ptr, tag)
+            let _dealloc = internals::DeallocOnDrop(ptr, strategy.layout(index));
+            L::_into_inner(ptr, index)
         }
     }
 
     #[inline]
     pub fn get<'a, A, N>(&self) -> &A
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         assert!(
@@ -413,7 +442,7 @@ impl<T: TypeList> Vari<T> {
     #[inline]
     pub fn get_mut<'a, A, N>(&mut self) -> &mut A
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         assert!(
@@ -427,7 +456,7 @@ impl<T: TypeList> Vari<T> {
     #[inline]
     pub fn try_get<'a, A, N>(&self) -> Option<&A>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         if self.is() {
@@ -440,7 +469,7 @@ impl<T: TypeList> Vari<T> {
     #[inline]
     pub fn try_get_mut<'a, A, N>(&mut self) -> Option<&mut A>
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
         if self.is() {
@@ -452,45 +481,53 @@ impl<T: TypeList> Vari<T> {
 
     pub fn set<N, A>(&mut self, value: A)
     where
-        T: Contains<A, N>,
+        L: Contains<A, N>,
         N: Peano,
     {
-        struct WriteOnDrop<T>(*mut (), Option<T>);
+        self.set_with(move || value)
+    }
 
-        impl<T> Drop for WriteOnDrop<T> {
+    pub fn set_with<N, A, F>(&mut self, value: F)
+    where
+        F: FnOnce() -> A,
+        L: Contains<A, N>,
+        N: Peano,
+    {
+        struct WriteOnDrop<L>(*mut (), Option<L>);
+
+        impl<L> Drop for WriteOnDrop<L> {
             fn drop(&mut self) {
-                unsafe { self.0.cast::<T>().write(self.1.take().unwrap()) }
+                unsafe { self.0.cast::<L>().write(self.1.take().unwrap()) }
             }
         }
 
-        let (ptr, index) = self.untag();
-        let layout = unsafe { T::layout(index, T::ALIGN) };
-        if layout == unsafe { internals::layout::<A>(T::ALIGN) } {
+        let (ptr, index) = self.split();
+        if self.strategy.matches_type_layout::<A>(index) {
             unsafe {
-                let _write = WriteOnDrop(ptr, Some(value));
+                let _write = WriteOnDrop(ptr, Some(value()));
                 self.tagged_ptr = NonNull::new_unchecked((ptr as usize | N::VALUE) as *mut ());
-                T::drop_in_place(ptr, index);
+                L::drop_in_place(ptr, index);
             }
         } else {
-            *self = Self::new(value);
+            *self = Self::with_strategy(value, self.strategy.clone());
         }
     }
 
     #[cfg(feature = "nightly")]
     pub fn unsize<U: ?Sized>(&self) -> &U
     where
-        T: imp::UnsizeAny<U, Output = *mut U>,
+        L: imp::UnsizeAny<U, Output = *mut U>,
     {
-        let (ptr, tag) = self.untag();
-        unsafe { &*T::apply_raw(ptr, tag, imp::UnsizeImp::<U>(PhantomData)) }
+        let (ptr, index) = self.split();
+        unsafe { &*L::apply_raw(ptr, index, imp::UnsizeImp::<U>(PhantomData)) }
     }
 
     #[cfg(feature = "nightly")]
     pub fn unsize_mut<U: ?Sized>(&mut self) -> &mut U
     where
-        T: imp::UnsizeAny<U, Output = *mut U>,
+        L: imp::UnsizeAny<U, Output = *mut U>,
     {
-        let (ptr, tag) = self.untag();
-        unsafe { &mut *T::apply_raw(ptr, tag, imp::UnsizeImp::<U>(PhantomData)) }
+        let (ptr, index) = self.split();
+        unsafe { &mut *L::apply_raw(ptr, index, imp::UnsizeImp::<U>(PhantomData)) }
     }
 }

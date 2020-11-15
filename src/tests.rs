@@ -88,15 +88,15 @@ fn eq() {
     let y = _Vari::new(0x72_u8);
     let z = _Vari::new(-0x72_i8);
 
-    assert_eq!(w.tag(), _Vari::tag_for::<u8, _>());
-    assert_eq!(x.tag(), _Vari::tag_for::<u8, _>());
-    assert_eq!(y.tag(), _Vari::tag_for::<u8, _>());
-    assert_eq!(z.tag(), _Vari::tag_for::<i8, _>());
+    assert_eq!(w.index(), _Vari::index_of::<u8, _>());
+    assert_eq!(x.index(), _Vari::index_of::<u8, _>());
+    assert_eq!(y.index(), _Vari::index_of::<u8, _>());
+    assert_eq!(z.index(), _Vari::index_of::<i8, _>());
 
-    assert_eq!(w.tag(), x.tag());
-    assert_eq!(w.tag(), y.tag());
-    assert_ne!(w.tag(), z.tag());
-    assert_ne!(y.tag(), z.tag());
+    assert_eq!(w.index(), x.index());
+    assert_eq!(w.index(), y.index());
+    assert_ne!(w.index(), z.index());
+    assert_ne!(y.index(), z.index());
 
     assert_eq!(w, w);
     assert_eq!(w, x);
@@ -157,7 +157,7 @@ fn match_any() {
 #[test]
 fn no_alloc() {
     let info = mockalloc::record_allocs(|| {
-        <vari!((), u8)>::new(());
+        crate::Vari::<tlist!((), u8), _>::with_strategy(|| (), crate::alloc::Minimal);
     });
 
     assert_eq!(info.num_allocs(), 0);

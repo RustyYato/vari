@@ -15,9 +15,9 @@ use core::task::{Context, Poll};
 #[cfg(feature = "std")]
 use std::error::Error;
 
-impl<T: TypeList> Clone for PinVari<T>
+impl<L: TypeList> Clone for PinVari<L>
 where
-    Vari<T>: Clone,
+    Vari<L>: Clone,
 {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -28,73 +28,73 @@ where
     }
 }
 
-impl<T: TypeList> Eq for PinVari<T> where Vari<T>: Eq {}
-impl<T: TypeList> PartialEq for PinVari<T>
+impl<L: TypeList> Eq for PinVari<L> where Vari<L>: Eq {}
+impl<L: TypeList> PartialEq for PinVari<L>
 where
-    Vari<T>: PartialEq,
+    Vari<L>: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<T: TypeList> PartialEq<Vari<T>> for PinVari<T>
+impl<L: TypeList> PartialEq<Vari<L>> for PinVari<L>
 where
-    Vari<T>: PartialEq,
+    Vari<L>: PartialEq,
 {
-    fn eq(&self, other: &Vari<T>) -> bool {
+    fn eq(&self, other: &Vari<L>) -> bool {
         &self.0 == other
     }
 }
 
-impl<T: TypeList> PartialEq<PinVari<T>> for Vari<T>
+impl<L: TypeList> PartialEq<PinVari<L>> for Vari<L>
 where
-    Vari<T>: PartialEq,
+    Vari<L>: PartialEq,
 {
-    fn eq(&self, other: &PinVari<T>) -> bool {
+    fn eq(&self, other: &PinVari<L>) -> bool {
         self == &other.0
     }
 }
 
-impl<T: TypeList> PartialOrd for PinVari<T>
+impl<L: TypeList> PartialOrd for PinVari<L>
 where
-    Vari<T>: PartialOrd,
+    Vari<L>: PartialOrd,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.0.partial_cmp(&other.0)
     }
 }
 
-impl<T: TypeList> PartialOrd<Vari<T>> for PinVari<T>
+impl<L: TypeList> PartialOrd<Vari<L>> for PinVari<L>
 where
-    Vari<T>: PartialOrd,
+    Vari<L>: PartialOrd,
 {
-    fn partial_cmp(&self, other: &Vari<T>) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Vari<L>) -> Option<Ordering> {
         self.0.partial_cmp(other)
     }
 }
 
-impl<T: TypeList> PartialOrd<PinVari<T>> for Vari<T>
+impl<L: TypeList> PartialOrd<PinVari<L>> for Vari<L>
 where
-    Vari<T>: PartialOrd,
+    Vari<L>: PartialOrd,
 {
-    fn partial_cmp(&self, other: &PinVari<T>) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &PinVari<L>) -> Option<Ordering> {
         self.partial_cmp(&other.0)
     }
 }
 
-impl<T: TypeList> Ord for PinVari<T>
+impl<L: TypeList> Ord for PinVari<L>
 where
-    Vari<T>: Ord,
+    Vari<L>: Ord,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }
 
-impl<T: TypeList> Hash for PinVari<T>
+impl<L: TypeList> Hash for PinVari<L>
 where
-    Vari<T>: Hash,
+    Vari<L>: Hash,
 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
@@ -111,31 +111,31 @@ impl<T: Future> Func<T> for PinFutureImp<'_, '_> {
     }
 }
 
-impl<T, Output> Future for PinVari<T>
+impl<L, Output> Future for PinVari<L>
 where
-    T: TypeList + for<'a, 'b> Apply<PinFutureImp<'a, 'b>, Output = Poll<Output>>,
+    L: TypeList + for<'a, 'b> Apply<PinFutureImp<'a, 'b>, Output = Poll<Output>>,
 {
     type Output = Output;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (ptr, tag) = Pin::into_inner(self).0.untag();
-        unsafe { T::apply_mut(ptr, tag, PinFutureImp(cx)) }
+        let (ptr, tag) = Pin::into_inner(self).0.split();
+        unsafe { L::apply_mut(ptr, tag, PinFutureImp(cx)) }
     }
 }
 
-impl<T: TypeList> fmt::Debug for PinVari<T>
+impl<L: TypeList> fmt::Debug for PinVari<L>
 where
-    Vari<T>: fmt::Debug,
+    Vari<L>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<T: TypeList> fmt::Display for PinVari<T>
+impl<L: TypeList> fmt::Display for PinVari<L>
 where
-    Vari<T>: fmt::Display,
+    Vari<L>: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -143,9 +143,9 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<T: TypeList> Error for PinVari<T>
+impl<L: TypeList> Error for PinVari<L>
 where
-    Vari<T>: Error,
+    Vari<L>: Error,
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         self.0.source()

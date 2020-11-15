@@ -1,6 +1,7 @@
 use crate::{
     internals::{Apply, CloneImp, Func, TypeList},
     Vari,
+    _alloc::AllocStrategy,
 };
 
 use core::cmp::Ordering;
@@ -19,15 +20,16 @@ use std::error::Error;
 #[cfg(feature = "std")]
 use std::io;
 
-impl<T: TypeList> Unpin for Vari<T> {}
+impl<L: TypeList> Unpin for Vari<L> {}
 
-impl<T: CloneImp + TypeList> Clone for Vari<T> {
+impl<L: CloneImp + TypeList, S: AllocStrategy<L>> Clone for Vari<L, S> {
     #[inline]
     fn clone(&self) -> Self {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
             Self {
-                tagged_ptr: T::clone(ptr, T::ALIGN, tag),
+                tagged_ptr: L::clone::<L, S>(&self.strategy, ptr, L::ALIGN, index),
+                strategy: self.strategy.clone(),
                 mark: PhantomData,
             }
         }
@@ -35,11 +37,20 @@ impl<T: CloneImp + TypeList> Clone for Vari<T> {
 
     #[inline]
     fn clone_from(&mut self, source: &Self) {
-        let (ptr, tag) = self.untag();
-        let (src_ptr, src_tag) = source.untag();
+        let (ptr, index) = self.split();
+        let (src_ptr, src_index) = source.split();
 
         unsafe {
-            T::clone_from::<T>(ptr, tag, src_ptr, src_tag, src_tag, &mut self.tagged_ptr);
+            L::clone_from::<L, S>(
+                &self.strategy,
+                ptr,
+                index,
+                src_ptr,
+                src_index,
+                src_index,
+                &mut self.tagged_ptr,
+            );
+            self.strategy.clone_from(&source.strategy);
         }
     }
 }
@@ -54,13 +65,13 @@ impl<T: fmt::Debug> Func<T> for DebugImp<'_, '_> {
     }
 }
 
-impl<T: TypeList + for<'a, 'b> Apply<DebugImp<'a, 'b>, Output = fmt::Result>> fmt::Debug
-    for Vari<T>
+impl<L: TypeList + for<'a, 'b> Apply<DebugImp<'a, 'b>, Output = fmt::Result>> fmt::Debug
+    for Vari<L>
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply(ptr, tag, DebugImp(f)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply(ptr, index, DebugImp(f)) }
     }
 }
 
@@ -74,13 +85,13 @@ impl<T: fmt::Display> Func<T> for DisplayImp<'_, '_> {
     }
 }
 
-impl<T: TypeList + for<'a, 'b> Apply<DisplayImp<'a, 'b>, Output = fmt::Result>> fmt::Display
-    for Vari<T>
+impl<L: TypeList + for<'a, 'b> Apply<DisplayImp<'a, 'b>, Output = fmt::Result>> fmt::Display
+    for Vari<L>
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply(ptr, tag, DisplayImp(f)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply(ptr, index, DisplayImp(f)) }
     }
 }
 
@@ -98,16 +109,16 @@ impl<T: PartialEq> Func<T> for EqImp {
     type Output = ();
 }
 
-impl<T> Eq for Vari<T> where T: TypeList + Apply<PartialEqImp, Output = bool> + Apply<EqImp> {}
-impl<T> PartialEq for Vari<T>
+impl<L> Eq for Vari<L> where L: TypeList + Apply<PartialEqImp, Output = bool> + Apply<EqImp> {}
+impl<L> PartialEq for Vari<L>
 where
-    T: TypeList + Apply<PartialEqImp, Output = bool>,
+    L: TypeList + Apply<PartialEqImp, Output = bool>,
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        let (ptr, tag) = self.untag();
-        let (optr, otag) = other.untag();
-        tag == otag && unsafe { T::apply(ptr, tag, PartialEqImp(optr)) }
+        let (ptr, index) = self.split();
+        let (optr, oindex) = other.split();
+        index == oindex && unsafe { L::apply(ptr, index, PartialEqImp(optr)) }
     }
 }
 
@@ -119,19 +130,19 @@ impl<T: PartialOrd> Func<T> for PartialOrdImp {
         unsafe { value.partial_cmp(&*(self.0 as *const T)) }
     }
 }
-impl<T> PartialOrd for Vari<T>
+impl<L> PartialOrd for Vari<L>
 where
-    T: TypeList
+    L: TypeList
         + Apply<PartialEqImp, Output = bool>
         + Apply<EqImp>
         + Apply<PartialOrdImp, Output = Option<Ordering>>,
 {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let (ptr, tag) = self.untag();
-        let (optr, otag) = other.untag();
-        match tag.cmp(&otag) {
-            Ordering::Equal => unsafe { T::apply(ptr, tag, PartialOrdImp(optr)) },
+        let (ptr, index) = self.split();
+        let (optr, oindex) = other.split();
+        match index.cmp(&oindex) {
+            Ordering::Equal => unsafe { L::apply(ptr, index, PartialOrdImp(optr)) },
             cmp => Some(cmp),
         }
     }
@@ -145,9 +156,9 @@ impl<T: Ord> Func<T> for OrdImp {
         unsafe { value.cmp(&*(self.0 as *const T)) }
     }
 }
-impl<T> Ord for Vari<T>
+impl<L> Ord for Vari<L>
 where
-    T: TypeList
+    L: TypeList
         + Apply<PartialEqImp, Output = bool>
         + Apply<EqImp>
         + Apply<PartialOrdImp, Output = Option<Ordering>>
@@ -155,10 +166,11 @@ where
 {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        let (ptr, tag) = self.untag();
-        let (optr, otag) = other.untag();
-        tag.cmp(&otag)
-            .then_with(|| unsafe { T::apply(ptr, tag, OrdImp(optr)) })
+        let (ptr, index) = self.split();
+        let (optr, oindex) = other.split();
+        index
+            .cmp(&oindex)
+            .then_with(|| unsafe { L::apply(ptr, index, OrdImp(optr)) })
     }
 }
 
@@ -170,12 +182,12 @@ impl<T: Hash> Func<T> for HashImp<'_> {
         value.hash(&mut { self.0 })
     }
 }
-impl<T: TypeList + for<'a> Apply<HashImp<'a>>> Hash for Vari<T> {
+impl<L: TypeList + for<'a> Apply<HashImp<'a>>> Hash for Vari<L> {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply(ptr, tag, HashImp(hasher));
+            L::apply(ptr, index, HashImp(hasher));
         }
     }
 }
@@ -224,90 +236,90 @@ impl<T: Hasher> Func<T> for HasherFinishImp {
         value.finish()
     }
 }
-impl<T> Hasher for Vari<T>
+impl<L> Hasher for Vari<L>
 where
-    T: TypeList + for<'a> Apply<HasherImp<'a>> + Apply<HasherFinishImp, Output = u64>,
+    L: TypeList + for<'a> Apply<HasherImp<'a>> + Apply<HasherFinishImp, Output = u64>,
 {
     fn finish(&self) -> u64 {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply(ptr, tag, HasherFinishImp(())) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply(ptr, index, HasherFinishImp(())) }
     }
     fn write(&mut self, bytes: &[u8]) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::Bytes(bytes));
+            L::apply_mut(ptr, index, HasherImp::Bytes(bytes));
         }
     }
     fn write_u8(&mut self, i: u8) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::U8(i));
+            L::apply_mut(ptr, index, HasherImp::U8(i));
         }
     }
     fn write_u16(&mut self, i: u16) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::U16(i));
+            L::apply_mut(ptr, index, HasherImp::U16(i));
         }
     }
     fn write_u32(&mut self, i: u32) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::U32(i));
+            L::apply_mut(ptr, index, HasherImp::U32(i));
         }
     }
     fn write_u64(&mut self, i: u64) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::U64(i));
+            L::apply_mut(ptr, index, HasherImp::U64(i));
         }
     }
     fn write_u128(&mut self, i: u128) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::U128(i));
+            L::apply_mut(ptr, index, HasherImp::U128(i));
         }
     }
     fn write_usize(&mut self, i: usize) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::Usize(i));
+            L::apply_mut(ptr, index, HasherImp::Usize(i));
         }
     }
     fn write_i8(&mut self, i: i8) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::I8(i));
+            L::apply_mut(ptr, index, HasherImp::I8(i));
         }
     }
     fn write_i16(&mut self, i: i16) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::I16(i));
+            L::apply_mut(ptr, index, HasherImp::I16(i));
         }
     }
     fn write_i32(&mut self, i: i32) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::I32(i));
+            L::apply_mut(ptr, index, HasherImp::I32(i));
         }
     }
     fn write_i64(&mut self, i: i64) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::I64(i));
+            L::apply_mut(ptr, index, HasherImp::I64(i));
         }
     }
     fn write_i128(&mut self, i: i128) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::I128(i));
+            L::apply_mut(ptr, index, HasherImp::I128(i));
         }
     }
     fn write_isize(&mut self, i: isize) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, HasherImp::Isize(i));
+            L::apply_mut(ptr, index, HasherImp::Isize(i));
         }
     }
 }
@@ -358,9 +370,9 @@ impl<T: Extend<I>, I> Func<T> for ExtendImp<'_, I> {
     }
 }
 
-impl<T, Item> Iterator for Vari<T>
+impl<L, Item> Iterator for Vari<L>
 where
-    T: TypeList
+    L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>,
 {
@@ -368,67 +380,67 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, IteratorImp(None)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, IteratorImp(None)) }
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply(ptr, tag, IteratorSizeImp(())) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply(ptr, index, IteratorSizeImp(())) }
     }
 
     #[inline]
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, IteratorImp(Some(n))) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, IteratorImp(Some(n))) }
     }
 }
 
-impl<T, Item> DoubleEndedIterator for Vari<T>
+impl<L, Item> DoubleEndedIterator for Vari<L>
 where
-    T: TypeList
+    L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<DoubleEndedIteratorImp, Output = Option<Item>>
         + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>,
 {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, DoubleEndedIteratorImp(None)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, DoubleEndedIteratorImp(None)) }
     }
 
     #[inline]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, DoubleEndedIteratorImp(Some(n))) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, DoubleEndedIteratorImp(Some(n))) }
     }
 }
 
-impl<T, Item> FusedIterator for Vari<T> where
-    T: TypeList
+impl<L, Item> FusedIterator for Vari<L> where
+    L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<FusedIteratorImp>
         + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>
 {
 }
 
-impl<T, Item> ExactSizeIterator for Vari<T> where
-    T: TypeList
+impl<L, Item> ExactSizeIterator for Vari<L> where
+    L: TypeList
         + Apply<IteratorImp, Output = Option<Item>>
         + Apply<ExactSizeIteratorImp>
         + Apply<IteratorSizeImp, Output = (usize, Option<usize>)>
 {
 }
 
-impl<T, A> Extend<A> for Vari<T>
+impl<L, A> Extend<A> for Vari<L>
 where
-    T: TypeList + for<'a> Apply<ExtendImp<'a, A>>,
+    L: TypeList + for<'a> Apply<ExtendImp<'a, A>>,
 {
     fn extend<I: IntoIterator<Item = A>>(&mut self, iter: I) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = self.split();
         unsafe {
-            T::apply_mut(ptr, tag, ExtendImp(&mut iter.into_iter()));
+            L::apply_mut(ptr, index, ExtendImp(&mut iter.into_iter()));
         }
     }
 }
@@ -443,16 +455,16 @@ impl<T: Future + Unpin> Func<T> for FutureImp<'_, '_> {
     }
 }
 
-impl<T, Output> Future for Vari<T>
+impl<L, Output> Future for Vari<L>
 where
-    T: TypeList + for<'a, 'b> Apply<FutureImp<'a, 'b>, Output = Poll<Output>>,
+    L: TypeList + for<'a, 'b> Apply<FutureImp<'a, 'b>, Output = Poll<Output>>,
 {
     type Output = Output;
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, FutureImp(cx)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, FutureImp(cx)) }
     }
 }
 
@@ -503,32 +515,32 @@ impl<T: io::Read> Func<T> for ReadImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<T> io::Read for Vari<T>
+impl<L> io::Read for Vari<L>
 where
-    T: TypeList + for<'a> Apply<ReadImp<'a>, Output = io::Result<usize>>,
+    L: TypeList + for<'a> Apply<ReadImp<'a>, Output = io::Result<usize>>,
 {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, ReadImp::Normal(buf)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, ReadImp::Normal(buf)) }
     }
 
     #[inline]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, ReadImp::ToEnd(buf)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, ReadImp::ToEnd(buf)) }
     }
 
     #[inline]
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, ReadImp::ToString(buf)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, ReadImp::ToString(buf)) }
     }
 
     #[inline]
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, ReadImp::Exact(buf)).map(drop) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, ReadImp::Exact(buf)).map(drop) }
     }
 }
 
@@ -567,34 +579,34 @@ impl<T: io::Write> Func<T> for WriteExtImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<T> io::Write for Vari<T>
+impl<L> io::Write for Vari<L>
 where
-    T: TypeList
+    L: TypeList
         + for<'a> Apply<WriteBaseImp<'a>, Output = io::Result<usize>>
         + for<'a> Apply<WriteExtImp<'a>, Output = io::Result<()>>,
 {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, WriteBaseImp(buf)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, WriteBaseImp(buf)) }
     }
 
     #[inline]
     fn flush(&mut self) -> io::Result<()> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, WriteExtImp::Flush) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, WriteExtImp::Flush) }
     }
 
     #[inline]
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, WriteExtImp::All(buf)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, WriteExtImp::All(buf)) }
     }
 
     #[inline]
     fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, WriteExtImp::Fmt(fmt)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, WriteExtImp::Fmt(fmt)) }
     }
 }
 
@@ -612,11 +624,11 @@ impl<T: io::Seek> Func<T> for SeekImp {
 }
 
 #[cfg(feature = "std")]
-impl<T: TypeList + Apply<SeekImp, Output = io::Result<u64>>> io::Seek for Vari<T> {
+impl<L: TypeList + Apply<SeekImp, Output = io::Result<u64>>> io::Seek for Vari<L> {
     #[inline]
     fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, SeekImp(pos)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_mut(ptr, index, SeekImp(pos)) }
     }
 }
 
@@ -664,38 +676,38 @@ impl<'a, T: 'a + io::BufRead> Func<T> for BufReadExtImp<'_> {
 }
 
 #[cfg(feature = "std")]
-impl<T> io::BufRead for Vari<T>
+impl<L> io::BufRead for Vari<L>
 where
     Self: io::Read,
-    T: TypeList
+    L: TypeList
         + for<'a> Apply<BufReadFillImp<'a>, Output = io::Result<&'a [u8]>>
         + Apply<BufReadConsumeImp>
         + for<'a> Apply<BufReadExtImp<'a>, Output = io::Result<usize>>,
 {
     #[inline]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_raw(ptr, tag, BufReadFillImp(PhantomData)) }
+        let (ptr, index) = Vari::split(self);
+        unsafe { L::apply_raw(ptr, index, BufReadFillImp(PhantomData)) }
     }
 
     #[inline]
     fn consume(&mut self, amt: usize) {
-        let (ptr, tag) = self.untag();
+        let (ptr, index) = Vari::split(self);
         unsafe {
-            T::apply_mut(ptr, tag, BufReadConsumeImp(amt));
+            L::apply_mut(ptr, index, BufReadConsumeImp(amt));
         }
     }
 
     #[inline]
     fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, BufReadExtImp::Until { byte, buf }) }
+        let (ptr, index) = Vari::split(self);
+        unsafe { L::apply_mut(ptr, index, BufReadExtImp::Until { byte, buf }) }
     }
 
     #[inline]
     fn read_line(&mut self, buf: &mut String) -> io::Result<usize> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_mut(ptr, tag, BufReadExtImp::Line { buf }) }
+        let (ptr, index) = Vari::split(self);
+        unsafe { L::apply_mut(ptr, index, BufReadExtImp::Line { buf }) }
     }
 }
 
@@ -713,14 +725,14 @@ impl<'a, T: 'a + Error> Func<T> for ErrorImp<'a> {
 }
 
 #[cfg(feature = "std")]
-impl<T> Error for Vari<T>
+impl<L> Error for Vari<L>
 where
     Self: fmt::Debug + fmt::Display,
-    T: TypeList + for<'a> Apply<ErrorImp<'a>, Output = Option<&'a (dyn Error + 'static)>>,
+    L: TypeList + for<'a> Apply<ErrorImp<'a>, Output = Option<&'a (dyn Error + 'static)>>,
 {
     fn cause(&self) -> Option<&dyn Error> {
-        let (ptr, tag) = self.untag();
-        unsafe { T::apply_raw(ptr, tag, ErrorImp(PhantomData)) }
+        let (ptr, index) = self.split();
+        unsafe { L::apply_raw(ptr, index, ErrorImp(PhantomData)) }
     }
 }
 pub trait UnpinTuple {}
