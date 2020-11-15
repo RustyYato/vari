@@ -11,8 +11,8 @@ pub unsafe trait AllocStrategy<L: TypeList>: Clone {
 
     unsafe fn layout_unchecked(&self, index: usize) -> Layout;
 
-    fn matches_type_layout<T>(&self, current: usize) -> bool;
-    fn matches_index_layout(&self, current: usize, other: usize) -> bool;
+    unsafe fn matches_type_layout<T>(&self, current: usize) -> bool;
+    unsafe fn matches_index_layout(&self, current: usize, other: usize) -> bool;
 }
 
 pub type DefaultStrategy = BiggestVariant;
@@ -29,11 +29,11 @@ unsafe impl<L: TypeList> AllocStrategy<L> for BiggestVariant {
         L::layout_max_unchecked(Layout::from_size_align_unchecked(0, L::ALIGN))
     }
 
-    fn matches_type_layout<T>(&self, _: usize) -> bool {
+    unsafe fn matches_type_layout<T>(&self, _: usize) -> bool {
         true
     }
 
-    fn matches_index_layout(&self, _: usize, _: usize) -> bool {
+    unsafe fn matches_index_layout(&self, _: usize, _: usize) -> bool {
         true
     }
 }
@@ -43,15 +43,13 @@ unsafe impl<L: TypeList> AllocStrategy<L> for Minimal {
         L::layout_min(index, L::ALIGN)
     }
 
-    fn matches_type_layout<T>(&self, current_index: usize) -> bool {
-        unsafe {
-            crate::internals::layout::<T>(L::ALIGN)
-                == AllocStrategy::<L>::layout(self, current_index)
-        }
+    unsafe fn matches_type_layout<T>(&self, current_index: usize) -> bool {
+        crate::internals::layout::<T>(L::ALIGN)
+            == AllocStrategy::<L>::layout_unchecked(self, current_index)
     }
 
-    fn matches_index_layout(&self, current_index: usize, other_index: usize) -> bool {
-        AllocStrategy::<L>::layout(self, current_index)
-            == AllocStrategy::<L>::layout(self, other_index)
+    unsafe fn matches_index_layout(&self, current_index: usize, other_index: usize) -> bool {
+        AllocStrategy::<L>::layout_unchecked(self, current_index)
+            == AllocStrategy::<L>::layout_unchecked(self, other_index)
     }
 }

@@ -508,7 +508,7 @@ impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
         }
 
         let (ptr, index) = self.split();
-        if self.strategy.matches_type_layout::<A>(index) {
+        if unsafe { self.strategy.matches_type_layout::<A>(index) } {
             unsafe {
                 let _write = WriteOnDrop(ptr, Some(value()));
                 self.tagged_ptr = NonNull::new_unchecked((ptr as usize | N::VALUE) as *mut ());
