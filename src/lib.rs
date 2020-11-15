@@ -515,7 +515,10 @@ impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
                 L::drop_in_place(ptr, index);
             }
         } else {
-            *self = Self::using_strategy_with(value, self.strategy.clone());
+            self.tagged_ptr = internals::new_with(value, L::ALIGN, N::VALUE, &self.strategy);
+            unsafe {
+                internals::destroy(ptr, index, &self.strategy);
+            }
         }
     }
 
