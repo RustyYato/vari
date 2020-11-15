@@ -260,6 +260,26 @@ impl<L: TypeList> Vari<L> {
     }
 }
 
+impl<L: TypeList> Vari<L, alloc::Minimal> {
+    #[inline]
+    pub fn minimal<N, V>(value: V) -> Self
+    where
+        L: Contains<V, N>,
+        N: Peano,
+    {
+        Self::minimal_with(move || value)
+    }
+
+    #[inline]
+    pub fn minimal_with<N, V, F: FnOnce() -> V>(value: F) -> Self
+    where
+        L: Contains<V, N>,
+        N: Peano,
+    {
+        Self::using_strategy_with(value, alloc::Minimal)
+    }
+}
+
 impl<L: TypeList, S: AllocStrategy<L>> Vari<L, S> {
     pub const TAG_BITS: u32 = L::SIZE_CLASS;
 

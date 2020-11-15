@@ -14,20 +14,12 @@ macro_rules! vari {
 #[global_allocator]
 static ALLOC: Mockalloc<System> = Mockalloc(System);
 
-fn new<T, N, L>(value: T) -> vari::Vari<L, Minimal>
-where
-    L: vari::traits::TypeList + vari::traits::Contains<T, N>,
-    N: vari::traits::Peano,
-{
-    vari::Vari::using_strategy(value, Minimal)
-}
-
 #[cfg_attr(miri, test)]
 #[cfg_attr(not(miri), mockalloc::test)]
 fn create_new() {
     type _Vari = vari!(u8, Box<i32>);
-    let _: _Vari = new(10);
-    let _: _Vari = new(Box::new(0));
+    let _ = _Vari::minimal(10);
+    let _ = _Vari::minimal(Box::new(0));
 }
 
 #[cfg_attr(miri, test)]
@@ -47,7 +39,7 @@ fn get() {
 #[cfg_attr(not(miri), mockalloc::test)]
 fn set() {
     type _Vari = vari!(u8, i8, Box<u32>);
-    let mut x: _Vari = new(0xae_u8);
+    let mut x = _Vari::minimal(0xae_u8);
 
     assert_eq!(*x.get::<u8, _>(), 0xae);
 
@@ -72,10 +64,10 @@ fn set() {
 #[cfg_attr(not(miri), mockalloc::test)]
 fn clone() {
     type _Vari = vari!(u8, i8, u32);
-    let w: _Vari = new(0xae_u8);
-    let x: _Vari = new(0xad_u8);
-    let y: _Vari = new(-0x72_i8);
-    let z: _Vari = new(0xabcdef01_u32);
+    let w = _Vari::minimal(0xae_u8);
+    let x = _Vari::minimal(0xad_u8);
+    let y = _Vari::minimal(-0x72_i8);
+    let z = _Vari::minimal(0xabcdef01_u32);
 
     let mut a = w.clone();
     assert_eq!(*a.get::<u8, _>(), 0xae);
@@ -97,10 +89,10 @@ fn clone() {
 #[cfg_attr(not(miri), mockalloc::test)]
 fn eq() {
     type _Vari = vari!(u8, i8, u32);
-    let w: _Vari = new(0xae_u8);
+    let w = _Vari::minimal(0xae_u8);
     let x = w.clone();
-    let y: _Vari = new(0x72_u8);
-    let z: _Vari = new(-0x72_i8);
+    let y = _Vari::minimal(0x72_u8);
+    let z = _Vari::minimal(-0x72_i8);
 
     assert_eq!(w.index(), _Vari::index_of::<u8, _>());
     assert_eq!(x.index(), _Vari::index_of::<u8, _>());
@@ -141,7 +133,7 @@ fn into_superset() {
     type _Vari2 = vari!(u32, i32);
     type _VariSup = vari!(u32, i32, u8);
 
-    let x: _Vari = new(212_u32);
+    let x = _Vari::minimal(212_u32);
     let x: _VariSup = x.into_superset();
 
     assert_eq!(*x.get::<u32, _>(), 212);
@@ -159,7 +151,7 @@ fn match_any() {
     struct B(u8);
     struct C(u8);
 
-    let bx: vari!(A, B, C) = new(C(0));
+    let bx = vari::Vari::<tlist!(A, B, C), _>::minimal(C(0));
 
     match_any!(match bx.into_inner() => {
         _ => panic!(),
@@ -172,7 +164,7 @@ fn match_any() {
 #[cfg_attr(miri, ignore)]
 fn no_alloc() {
     let info = mockalloc::record_allocs(|| {
-        let _: vari::Vari<tlist!((), u8), _> = new(());
+        vari::Vari::<tlist!((), u8), _>::minimal(());
     });
 
     assert_eq!(info.num_allocs(), 0);
