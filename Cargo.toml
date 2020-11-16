@@ -16,3 +16,12 @@ nightly = []
 
 [dev-dependencies]
 mockalloc = '0.1'
+criterion = "0.3"
+
+[[bench]]
+name = "biggest_variant"
+harness = false
+
+[[bench]]
+name = "minimal"
+harness = false
